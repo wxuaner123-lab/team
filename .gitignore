@@ -1,0 +1,28 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.pyo
+
+.venv/
+venv/
+env/
+
+.idea/
+.vscode/
+
+debug_output/
+logs/
+outputs/
+records/
+backups/
+app_history_backup.py
+检测报告_*.xlsx
+批量检测总报告_*.xlsx
+data2_test_results.xlsx
+~$*
+.~*
+
+# Real customer/manufacturing samples stay local unless explicitly cleared for sharing.
+data/实物图/data 2/
+
+.streamlit/secrets.toml

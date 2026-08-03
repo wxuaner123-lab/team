@@ -31,6 +31,10 @@ from product_store import (
 from qr_parser import decode_qr_image
 
 
+DEFAULT_REAL_IMAGE_DIR = PROJECT_ROOT / "data" / "实物图" / "data 2"
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+
+
 st.set_page_config(
     page_title="制造现场质量确认终端",
     page_icon="✓",
@@ -76,6 +80,7 @@ def render_sidebar() -> str:
                 "现场检测端",
                 "后台管理",
                 "检测记录",
+                "实物图验证",
                 "MVP路线图",
             ],
             label_visibility="collapsed",
@@ -254,13 +259,28 @@ def render_standard_snapshot(product: dict[str, Any]) -> dict[str, str]:
 
 def get_label_image_bytes() -> tuple[bytes | None, str]:
     st.subheader("3. 拍摄 / 上传标签")
-    camera_file = st.camera_input("使用iPad摄像头拍摄标签")
-    uploaded_file = st.file_uploader(
-        "也可以上传标签图片进行测试",
-        type=["jpg", "jpeg", "png"],
-    )
+    label_tabs = st.tabs(["马上拍照", "上传图片"])
+    selected_file = None
 
-    selected_file = camera_file or uploaded_file
+    with label_tabs[0]:
+        camera_file = st.camera_input(
+            "使用iPad摄像头马上拍摄产品标签",
+            key="label_camera_now",
+        )
+        if camera_file is not None:
+            selected_file = camera_file
+            st.success("已获取现场拍照图片。")
+
+    with label_tabs[1]:
+        uploaded_file = st.file_uploader(
+            "上传已有标签图片进行测试",
+            type=["jpg", "jpeg", "png"],
+            key="label_image_upload",
+        )
+        if selected_file is None and uploaded_file is not None:
+            selected_file = uploaded_file
+            st.success("已获取上传图片。")
+
     if selected_file is None:
         return None, ""
 
@@ -582,6 +602,281 @@ def render_records_page() -> None:
         st.image(str(image_path), caption="检测证据图", width="stretch")
 
 
+def find_images(path: Path) -> list[Path]:
+    return sorted(
+        item
+        for item in path.rglob("*")
+        if item.is_file() and item.suffix.lower() in IMAGE_SUFFIXES
+    )
+
+
+def choose_label_images(sample_dir: Path, limit: int = 5) -> list[Path]:
+    label_dirs = sorted(
+        item
+        for item in sample_dir.iterdir()
+        if item.is_dir() and item.name.lower().startswith("label")
+    )
+    selected_images: list[Path] = []
+    if label_dirs:
+        for label_dir in label_dirs:
+            images = find_images(label_dir)
+            if images:
+                selected_images.append(images[0])
+    else:
+        selected_images = find_images(sample_dir)
+    return selected_images[:limit]
+
+
+def scan_real_samples(data_dir: Path) -> list[dict[str, Any]]:
+    if not data_dir.exists():
+        return []
+    samples: list[dict[str, Any]] = []
+    for sample_dir in sorted(item for item in data_dir.iterdir() if item.is_dir()):
+        pdfs = sorted(
+            item
+            for item in sample_dir.rglob("*")
+            if item.is_file() and item.suffix.lower() == ".pdf"
+        )
+        images = choose_label_images(sample_dir, limit=20)
+        if pdfs or images:
+            samples.append(
+                {
+                    "sample_id": sample_dir.name,
+                    "sample_dir": sample_dir,
+                    "pdfs": pdfs,
+                    "images": images,
+                }
+            )
+    return samples
+
+
+def summarize_real_samples(samples: list[dict[str, Any]], data_dir: Path) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "样本": sample["sample_id"],
+                "PDF数量": len(sample["pdfs"]),
+                "标签图片数量": len(sample["images"]),
+                "首个PDF": (
+                    str(sample["pdfs"][0].relative_to(data_dir))
+                    if sample["pdfs"]
+                    else ""
+                ),
+            }
+            for sample in samples
+        ]
+    )
+
+
+def resolve_real_data_dir(path_text: str) -> tuple[Path, list[Path]]:
+    raw_path = Path(path_text).expanduser()
+    candidates: list[Path] = []
+    if raw_path.is_absolute():
+        candidates.append(raw_path)
+    else:
+        candidates.append((PROJECT_ROOT / raw_path).resolve())
+        candidates.append((PROJECT_ROOT.parent / raw_path).resolve())
+        if str(raw_path).startswith("1/"):
+            candidates.append((PROJECT_ROOT.parent / str(raw_path)[2:]).resolve())
+
+    normalized_text = path_text.replace(" ", "").lower()
+    if "data2" in normalized_text and "实物" in normalized_text:
+        candidates.append(DEFAULT_REAL_IMAGE_DIR)
+    if "实物" in normalized_text and "data" in normalized_text:
+        candidates.append(DEFAULT_REAL_IMAGE_DIR)
+
+    deduped_candidates: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            deduped_candidates.append(candidate)
+            seen.add(key)
+
+    for candidate in deduped_candidates:
+        if candidate.exists():
+            return candidate, deduped_candidates
+    return deduped_candidates[0], deduped_candidates
+
+
+def run_real_sample_validation(
+    sample: dict[str, Any],
+    max_labels: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not sample["pdfs"]:
+        raise RuntimeError("该样本没有PDF图纸。")
+    pdf_path = sample["pdfs"][0]
+    drawing_result = extract_drawing_content(
+        pdf_path,
+        debug_output_dir=PROJECT_ROOT / "debug_output" / "real_samples",
+        file_stem=f"{sample['sample_id']}_drawing",
+    )
+    drawing_fields = {
+        field_name: value
+        for field_name, value in drawing_result.get("fields", {}).items()
+        if clean_text(value)
+    }
+    if not drawing_fields:
+        raise RuntimeError("PDF未解析出可比对标准字段。")
+
+    validation_rows: list[dict[str, Any]] = []
+    for image_index, image_path in enumerate(sample["images"][:max_labels], start=1):
+        image_bytes = image_path.read_bytes()
+        quality = evaluate_label_image(image_bytes)
+        label_result = recognize_label(
+            image_bytes,
+            confidence_threshold=0.30,
+            debug_output_dir=PROJECT_ROOT / "debug_output" / "real_samples",
+            file_stem=f"{sample['sample_id']}_label_{image_index}",
+        )
+        label_fields_for_compare = {
+            field_name: label_result.get("fields", {}).get(field_name, "")
+            for field_name in drawing_fields
+        }
+        comparison_rows, overall_result = compare_fields(
+            drawing_fields,
+            label_fields_for_compare,
+        )
+        validation_rows.append(
+            {
+                "样本": sample["sample_id"],
+                "标签图片": image_path.name,
+                "结果": overall_result,
+                "PDF字段数": len(drawing_fields),
+                "标签字段数": len(
+                    [
+                        value
+                        for value in label_result.get("fields", {}).values()
+                        if clean_text(value)
+                    ]
+                ),
+                "OCR置信度": label_result.get("confidence", 0),
+                "图片质量": quality["status"],
+                "质量分": quality["score"],
+                "异常字段": "、".join(
+                    row["字段名称"]
+                    for row in comparison_rows
+                    if row.get("检测结果") == "FAIL"
+                ),
+                "需确认字段": "、".join(
+                    row["字段名称"]
+                    for row in comparison_rows
+                    if row.get("检测结果") not in {"PASS", "FAIL"}
+                ),
+                "comparison_rows": comparison_rows,
+                "label_fields": label_result.get("fields", {}),
+                "ocr_text": label_result.get("raw_text", ""),
+            }
+        )
+    return drawing_result, validation_rows
+
+
+def render_real_image_validation_page() -> None:
+    st.subheader("实物图验证")
+    data_dir_text = st.text_input(
+        "实物图目录",
+        value=str(DEFAULT_REAL_IMAGE_DIR),
+        help="你的路径可以填 1/data2/实物；当前项目识别到的真实样本目录是 data/实物图/data 2。",
+    )
+    data_dir, candidate_dirs = resolve_real_data_dir(data_dir_text)
+
+    if not data_dir.exists():
+        st.error(f"目录不存在：{data_dir}")
+        st.info(f"当前可用默认目录：{DEFAULT_REAL_IMAGE_DIR}")
+        with st.expander("尝试过的目录"):
+            for candidate in candidate_dirs:
+                st.write(str(candidate))
+        return
+
+    if str(data_dir) != data_dir_text:
+        st.caption(f"实际使用目录：{data_dir}")
+
+    samples = scan_real_samples(data_dir)
+    if not samples:
+        st.warning("没有扫描到包含PDF或标签图片的样本。")
+        return
+
+    st.success(f"已扫描到 {len(samples)} 个样本。")
+    st.dataframe(
+        summarize_real_samples(samples, data_dir),
+        width="stretch",
+        hide_index=True,
+    )
+
+    col_sample, col_limit = st.columns([2, 1])
+    selected_sample_id = col_sample.selectbox(
+        "选择要验证的样本",
+        [sample["sample_id"] for sample in samples],
+    )
+    max_labels = col_limit.number_input(
+        "最多验证标签数",
+        min_value=1,
+        max_value=10,
+        value=2,
+        step=1,
+    )
+    selected_sample = next(
+        sample for sample in samples if sample["sample_id"] == selected_sample_id
+    )
+
+    if st.button("运行选中样本验证", type="primary", width="stretch"):
+        with st.spinner("正在解析PDF并识别实物标签..."):
+            drawing_result, validation_rows = run_real_sample_validation(
+                selected_sample,
+                max_labels=int(max_labels),
+            )
+        st.session_state["last_real_validation"] = {
+            "sample_id": selected_sample_id,
+            "drawing_result": drawing_result,
+            "validation_rows": validation_rows,
+        }
+
+    validation = st.session_state.get("last_real_validation")
+    if validation:
+        st.divider()
+        st.write(f"最近验证样本：{validation['sample_id']}")
+        drawing_fields = {
+            field_name: value
+            for field_name, value in validation["drawing_result"].get("fields", {}).items()
+            if clean_text(value)
+        }
+        st.write(f"PDF解析模式：{validation['drawing_result'].get('parse_mode', '-')}")
+        st.dataframe(
+            pd.DataFrame(
+                [{"字段": field_name, "标准值": value} for field_name, value in drawing_fields.items()]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+        rows_for_display = [
+            {
+                key: value
+                for key, value in row.items()
+                if key not in {"comparison_rows", "label_fields", "ocr_text"}
+            }
+            for row in validation["validation_rows"]
+        ]
+        st.dataframe(
+            pd.DataFrame(rows_for_display),
+            width="stretch",
+            hide_index=True,
+        )
+
+        detail_labels = [row["标签图片"] for row in validation["validation_rows"]]
+        if detail_labels:
+            selected_label = st.selectbox("查看标签比对明细", detail_labels)
+            selected_row = next(
+                row for row in validation["validation_rows"] if row["标签图片"] == selected_label
+            )
+            st.dataframe(
+                style_result_rows(comparison_dataframe(selected_row["comparison_rows"])),
+                width="stretch",
+                hide_index=True,
+            )
+            with st.expander("OCR原始文字"):
+                st.text_area("OCR原始文字", selected_row["ocr_text"], height=220)
+
+
 def render_roadmap_page() -> None:
     st.subheader("MVP开发路线图")
     st.markdown(
@@ -622,6 +917,8 @@ def main() -> None:
         render_admin_page()
     elif page == "检测记录":
         render_records_page()
+    elif page == "实物图验证":
+        render_real_image_validation_page()
     else:
         render_roadmap_page()
 

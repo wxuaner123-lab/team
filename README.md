@@ -58,6 +58,19 @@ PID=ICM-2400-A;MODEL=ICM-2400-A;SN=ICM2400A-260701;BATCH=DEMO-BATCH
 test_samples/图纸标签OCR_MVP_批量横向对比测试样品_兼容版/batch_sample_compatible/label_001_baseline.png
 ```
 
+现场端的标签图片输入有两个入口：
+
+- `马上拍照`：用于 iPad 现场直接调用摄像头拍标签
+- `上传图片`：用于上传已有标签图做测试或复核
+
+`实物图验证` 页面默认读取：
+
+```text
+data/实物图/data 2
+```
+
+该目录是真实制造样本，本地验证使用，不会提交到 GitHub。
+
 ## 批量测试
 
 ```bash

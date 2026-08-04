@@ -48,7 +48,7 @@ def is_noise_value(value: str) -> bool:
         "更改文件号",
         "旧底图总号",
         "二维码",
-        "QR",
+        "QR CODE",
     )
     return any(keyword.upper() in normalized for keyword in noise_keywords)
 

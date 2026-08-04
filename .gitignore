@@ -27,6 +27,8 @@ data/实物图/data 2/
 
 # Local product master data and uploaded drawings may contain factory/customer data.
 master_data/products.json
+master_data/drawings.json
+master_data/field_templates.json
 master_data/drawings/
 
 .streamlit/secrets.toml

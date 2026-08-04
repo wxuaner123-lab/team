@@ -16,16 +16,24 @@ from product_store import (
     PROJECT_ROOT,
     append_quality_record,
     build_standard_snapshot,
+    delete_drawing,
     ensure_storage,
+    get_current_drawing_for_product,
     get_product_by_index,
+    list_drawings_for_product,
+    load_drawings,
     load_products,
     load_quality_records,
+    lookup_product_and_drawing,
     lookup_product,
     parse_qr_payload,
     product_options,
+    register_drawing_pdf,
     resolve_project_path,
     save_evidence_image,
     save_uploaded_drawing,
+    set_current_drawing,
+    update_drawing_metadata,
     upsert_product,
 )
 from qr_parser import decode_qr_image
@@ -78,6 +86,7 @@ def render_sidebar() -> str:
             "功能",
             [
                 "现场检测端",
+                "图纸库管理",
                 "后台管理",
                 "检测记录",
                 "实物图验证",
@@ -152,7 +161,62 @@ def display_product_card(product: dict[str, Any], qr_payload: dict[str, str]) ->
     )
 
 
-def get_product_from_scan() -> tuple[dict[str, Any] | None, dict[str, str], str]:
+def display_drawing_card(drawing: dict[str, Any] | None) -> None:
+    if not drawing:
+        st.warning("当前产品没有匹配到PDF图纸。")
+        return
+    cols = st.columns(4)
+    cols[0].metric("图纸ID", drawing.get("drawing_id", "-"))
+    cols[1].metric("图纸版本", drawing.get("version", "-"))
+    cols[2].metric("PDF二维码", drawing.get("qr_code", "-"))
+    cols[3].metric("字段数", len([v for v in drawing.get("standard_fields", {}).values() if clean_text(v)]))
+    st.caption(f"PDF文件：{drawing.get('pdf_name', '')}")
+
+
+def render_unmatched_qr_upload(qr_text: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    st.error("未找到对应图纸。")
+    action = st.radio(
+        "请选择下一步",
+        ["上传新图纸", "重新扫描二维码", "取消"],
+        horizontal=True,
+    )
+    if action == "重新扫描二维码":
+        st.info("请重新拍摄/上传二维码图，或修改手动输入内容。")
+        return None, None
+    if action == "取消":
+        st.stop()
+
+    st.markdown("**上传新图纸并建立绑定关系**")
+    uploaded_pdf = st.file_uploader(
+        "选择PDF图纸",
+        type=["pdf"],
+        key="unmatched_qr_pdf_upload",
+    )
+    cols = st.columns(3)
+    fallback_product_id = qr_text or "UNKNOWN-PRODUCT"
+    product_id = cols[0].text_input("产品ID", value=fallback_product_id)
+    product_model = cols[1].text_input("产品型号", value=product_id)
+    version = cols[2].text_input("图纸版本", value="V1.0")
+
+    if uploaded_pdf is not None and st.button("保存图纸并进入检测", type="primary", width="stretch"):
+        with st.spinner("正在保存PDF、识别PDF二维码并解析标准字段..."):
+            registration = register_drawing_pdf(
+                pdf_bytes=uploaded_pdf.getvalue(),
+                pdf_name=uploaded_pdf.name,
+                qr_text=qr_text,
+                product_id=product_id,
+                product_model=product_model,
+                version=version,
+                make_current=True,
+            )
+        st.success("图纸已加入图纸库，后续扫描该二维码可自动匹配。")
+        st.session_state["last_registered_drawing"] = registration
+        return registration["product"], registration["drawing"]
+
+    return None, None
+
+
+def get_product_from_scan() -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, str], str]:
     st.subheader("1. 扫描 / 输入二维码")
     qr_tabs = st.tabs(["相机扫描", "上传二维码图", "手动输入"])
     qr_text = ""
@@ -196,32 +260,71 @@ def get_product_from_scan() -> tuple[dict[str, Any] | None, dict[str, str], str]
             qr_text = manual_qr_text
 
     st.caption(
-        "演示二维码内容：PID=ABC-001;MODEL=ABC-001;SN=SN20260803001;BATCH=B20260803"
+        "演示二维码内容：ICM-2400-A-V1.2 或 PID=ICM-2400-A;MODEL=ICM-2400-A;SN=ICM2400A-260701;BATCH=DEMO-BATCH"
     )
 
-    product, qr_payload = lookup_product(qr_text) if qr_text else (None, {})
+    product, drawing, qr_payload = (
+        lookup_product_and_drawing(qr_text)
+        if qr_text
+        else (None, None, {})
+    )
 
     options = product_options()
     selected_label = ""
-    if not product and options:
+    if qr_text and (not product or not drawing):
+        registered_product, registered_drawing = render_unmatched_qr_upload(qr_text)
+        if registered_product and registered_drawing:
+            product = registered_product
+            drawing = registered_drawing
+    elif not product and options:
         selected_index = st.selectbox(
             "未扫码时，可手动选择产品用于测试",
             range(len(options)),
             format_func=lambda index: options[index],
         )
         product = get_product_by_index(selected_index)
+        drawing = get_current_drawing_for_product(product.get("product_id", "")) if product else None
         selected_label = options[selected_index]
 
     if product:
         st.success("标准数据已加载")
         display_product_card(product, qr_payload or parse_qr_payload(qr_text))
+        display_drawing_card(drawing)
     else:
         st.warning("请先扫描二维码，或在后台添加产品标准数据。")
 
-    return product, qr_payload, selected_label
+    return product, drawing, qr_payload, selected_label
 
 
-def load_product_drawing_fields(product: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+def load_product_drawing_fields(
+    product: dict[str, Any],
+    drawing: dict[str, Any] | None = None,
+) -> tuple[dict[str, str], list[str]]:
+    if drawing:
+        drawing_fields = {
+            field_name: clean_text(value)
+            for field_name, value in drawing.get("standard_fields", {}).items()
+            if clean_text(value)
+        }
+        warnings = [
+            f"已匹配图纸库：{drawing.get('pdf_name', '')}",
+            f"图纸版本：{drawing.get('version', '-')}",
+        ]
+        if drawing.get("qr_code"):
+            warnings.append(f"PDF二维码：{drawing.get('qr_code')}")
+        if drawing_fields:
+            return drawing_fields, warnings
+
+        drawing_path = resolve_project_path(clean_text(drawing.get("pdf_path", "")))
+        if drawing_path and drawing_path.exists():
+            try:
+                drawing_content = extract_drawing_content(drawing_path)
+                warnings.extend(list(drawing_content.get("warnings", [])))
+                warnings.append(f"图纸解析模式：{drawing_content.get('parse_mode', '-')}")
+                return drawing_content.get("fields", {}), warnings
+            except Exception as error:
+                return {}, [*warnings, f"图纸解析失败：{error}"]
+
     drawing_path = resolve_project_path(clean_text(product.get("drawing_file", "")))
     if not drawing_path or not drawing_path.exists():
         return {}, ["当前产品未绑定PDF图纸，使用后台维护的标准字段。"]
@@ -234,10 +337,21 @@ def load_product_drawing_fields(product: dict[str, Any]) -> tuple[dict[str, str]
         return {}, [f"图纸解析失败，使用后台维护的标准字段：{error}"]
 
 
-def render_standard_snapshot(product: dict[str, Any]) -> dict[str, str]:
+def render_standard_snapshot(
+    product: dict[str, Any],
+    drawing: dict[str, Any] | None = None,
+) -> dict[str, str]:
     st.subheader("2. 标准字段快照")
-    drawing_fields, warnings = load_product_drawing_fields(product)
-    standard_snapshot = build_standard_snapshot(product, drawing_fields)
+    drawing_fields, warnings = load_product_drawing_fields(product, drawing)
+    standard_snapshot = (
+        {
+            field_name: value
+            for field_name, value in drawing_fields.items()
+            if clean_text(value)
+        }
+        if drawing
+        else build_standard_snapshot(product, drawing_fields)
+    )
 
     for warning in warnings:
         st.info(warning)
@@ -305,6 +419,7 @@ def get_label_image_bytes() -> tuple[bytes | None, str]:
 
 def build_inspection_record(
     product: dict[str, Any],
+    drawing: dict[str, Any] | None,
     qr_payload: dict[str, str],
     standard_snapshot: dict[str, str],
     label_result: dict[str, Any],
@@ -329,6 +444,10 @@ def build_inspection_record(
         "product_id": product.get("product_id", ""),
         "product_model": product.get("product_model", ""),
         "product_version": product.get("version", ""),
+        "drawing_id": drawing.get("drawing_id", "") if drawing else "",
+        "drawing_version": drawing.get("version", "") if drawing else "",
+        "drawing_qr_code": drawing.get("qr_code", "") if drawing else "",
+        "drawing_pdf": drawing.get("pdf_path", "") if drawing else product.get("drawing_file", ""),
         "sn": qr_payload.get("sn") or qr_payload.get("serial") or "",
         "batch_no": qr_payload.get("batch") or qr_payload.get("batch_no") or "",
         "qr_payload": qr_payload,
@@ -348,11 +467,11 @@ def build_inspection_record(
 
 
 def render_inspection_page() -> None:
-    product, qr_payload, _ = get_product_from_scan()
+    product, drawing, qr_payload, _ = get_product_from_scan()
     if not product:
         return
 
-    standard_snapshot = render_standard_snapshot(product)
+    standard_snapshot = render_standard_snapshot(product, drawing)
     image_bytes, filename = get_label_image_bytes()
 
     st.subheader("4. OCR识别与自动比对")
@@ -381,6 +500,7 @@ def render_inspection_page() -> None:
             )
             record = build_inspection_record(
                 product=product,
+                drawing=drawing,
                 qr_payload=qr_payload,
                 standard_snapshot=standard_snapshot,
                 label_result=label_result,
@@ -446,6 +566,14 @@ def field_editor(default_fields: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def first_non_empty_line(text: str) -> str:
+    for line in text.splitlines():
+        cleaned = clean_text(line)
+        if cleaned:
+            return cleaned
+    return ""
+
+
 def render_admin_page() -> None:
     st.subheader("产品与标准字段管理")
     products = load_products()
@@ -506,8 +634,20 @@ def render_admin_page() -> None:
             st.error("产品ID不能为空。")
             return
         drawing_file = existing_drawing_file
+        parsed_pdf_fields: dict[str, str] = {}
         if uploaded_drawing is not None:
-            drawing_file = save_uploaded_drawing(uploaded_drawing, product_id)
+            with st.spinner("正在将PDF加入图纸库并解析标准字段..."):
+                registration = register_drawing_pdf(
+                    pdf_bytes=uploaded_drawing.getvalue(),
+                    pdf_name=uploaded_drawing.name,
+                    qr_text=first_non_empty_line(qr_samples_text),
+                    product_id=product_id,
+                    product_model=product_model or product_id,
+                    version=version or "V1.0",
+                    make_current=True,
+                )
+            drawing_file = registration["drawing"].get("pdf_path", "")
+            parsed_pdf_fields = registration["drawing"].get("standard_fields", {})
 
         payload = {
             "product_id": product_id,
@@ -520,7 +660,7 @@ def render_admin_page() -> None:
                 if clean_text(line)
             ],
             "drawing_file": drawing_file,
-            "standard_fields": standard_fields,
+            "standard_fields": parsed_pdf_fields or standard_fields,
             "required_fields": [
                 field_name
                 for field_name, value in standard_fields.items()
@@ -557,6 +697,200 @@ def render_admin_page() -> None:
             st.info("当前产品未绑定PDF图纸。")
 
 
+def drawing_library_dataframe(drawings: list[dict[str, Any]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "图纸ID": drawing.get("drawing_id", ""),
+                "产品ID": drawing.get("product_id", ""),
+                "型号": drawing.get("product_model", ""),
+                "二维码": drawing.get("qr_code", ""),
+                "PDF文件": drawing.get("pdf_name", ""),
+                "版本": drawing.get("version", ""),
+                "当前版本": "是" if drawing.get("is_current") else "否",
+                "字段数": len(
+                    [
+                        value
+                        for value in drawing.get("standard_fields", {}).values()
+                        if clean_text(value)
+                    ]
+                ),
+                "上传时间": drawing.get("upload_time", ""),
+                "更新时间": drawing.get("update_time", ""),
+            }
+            for drawing in drawings
+        ]
+    )
+
+
+def render_drawing_library_page() -> None:
+    st.subheader("图纸库管理")
+    st.caption("二维码 -> 产品 -> PDF图纸 -> 标准字段模板")
+
+    drawings = load_drawings()
+    if drawings:
+        st.dataframe(
+            drawing_library_dataframe(drawings),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("图纸库为空，请先上传PDF图纸。")
+
+    st.divider()
+    st.subheader("上传PDF图纸")
+    with st.form("drawing_library_upload_form"):
+        uploaded_pdf = st.file_uploader(
+            "选择PDF图纸",
+            type=["pdf"],
+            key="drawing_library_pdf_upload",
+        )
+        cols = st.columns(4)
+        product_id = cols[0].text_input("产品ID", placeholder="例如 ABC001-V2")
+        product_model = cols[1].text_input("产品型号", placeholder="例如 ABC-001")
+        version = cols[2].text_input("图纸版本", value="V1.0")
+        qr_text = cols[3].text_input("二维码内容", placeholder="可留空，系统会尝试从PDF识别")
+        make_current = st.checkbox("设为该产品当前使用版本", value=True)
+        submitted = st.form_submit_button("上传并解析入库", type="primary")
+
+    if submitted:
+        if uploaded_pdf is None:
+            st.error("请先选择PDF图纸。")
+        else:
+            with st.spinner("正在保存PDF、识别PDF二维码、解析标准字段..."):
+                registration = register_drawing_pdf(
+                    pdf_bytes=uploaded_pdf.getvalue(),
+                    pdf_name=uploaded_pdf.name,
+                    qr_text=qr_text,
+                    product_id=product_id,
+                    product_model=product_model,
+                    version=version,
+                    make_current=make_current,
+                )
+            drawing = registration["drawing"]
+            pdf_qr = registration["pdf_qr"]
+            st.success(f"图纸已入库：{drawing.get('drawing_id')}")
+            if pdf_qr.get("success"):
+                st.info(f"PDF二维码：{pdf_qr.get('text')}")
+            else:
+                st.warning(pdf_qr.get("message", "PDF未识别到二维码。"))
+            parsed_fields = [
+                {"字段": field_name, "标准值": value}
+                for field_name, value in drawing.get("standard_fields", {}).items()
+                if clean_text(value)
+            ]
+            st.dataframe(
+                pd.DataFrame(parsed_fields),
+                width="stretch",
+                hide_index=True,
+            )
+
+    st.divider()
+    st.subheader("图纸绑定维护")
+    drawings = load_drawings()
+    if not drawings:
+        return
+    drawing_options = [
+        f"{drawing.get('drawing_id')} / {drawing.get('product_id')} / {drawing.get('version')}"
+        for drawing in drawings
+    ]
+    selected_index = st.selectbox(
+        "选择图纸",
+        range(len(drawing_options)),
+        format_func=lambda index: drawing_options[index],
+    )
+    selected_drawing = drawings[selected_index]
+
+    detail_cols = st.columns(2)
+    with detail_cols[0]:
+        st.write("**绑定关系**")
+        st.json(
+            {
+                "drawing_id": selected_drawing.get("drawing_id", ""),
+                "product_id": selected_drawing.get("product_id", ""),
+                "product_model": selected_drawing.get("product_model", ""),
+                "qr_code": selected_drawing.get("qr_code", ""),
+                "version": selected_drawing.get("version", ""),
+                "pdf_path": selected_drawing.get("pdf_path", ""),
+                "is_current": selected_drawing.get("is_current", False),
+            }
+        )
+    with detail_cols[1]:
+        st.write("**标准字段模板**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"字段": field_name, "标准值": value}
+                    for field_name, value in selected_drawing.get("standard_fields", {}).items()
+                    if clean_text(value)
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    with st.form("drawing_metadata_form"):
+        cols = st.columns(3)
+        new_version = cols[0].text_input(
+            "更新版本",
+            value=clean_text(selected_drawing.get("version", "")),
+        )
+        new_qr_code = cols[1].text_input(
+            "更新二维码",
+            value=clean_text(selected_drawing.get("qr_code", "")),
+        )
+        new_model = cols[2].text_input(
+            "更新型号",
+            value=clean_text(selected_drawing.get("product_model", "")),
+        )
+        update_submitted = st.form_submit_button("保存绑定信息")
+    if update_submitted:
+        updated = update_drawing_metadata(
+            selected_drawing.get("drawing_id", ""),
+            version=new_version,
+            qr_code=new_qr_code,
+            product_model=new_model,
+        )
+        if updated:
+            st.success("绑定信息已更新。")
+        else:
+            st.error("未找到该图纸记录。")
+
+    action_cols = st.columns(3)
+    if action_cols[0].button("设为当前版本", width="stretch"):
+        set_current_drawing(
+            selected_drawing.get("product_id", ""),
+            selected_drawing.get("drawing_id", ""),
+        )
+        st.success("已设为当前版本。")
+
+    replacement_pdf = action_cols[1].file_uploader(
+        "替换PDF",
+        type=["pdf"],
+        key="drawing_replace_pdf",
+    )
+    if replacement_pdf is not None and action_cols[1].button("上传替换版本", width="stretch"):
+        with st.spinner("正在解析替换PDF并生成新版本记录..."):
+            registration = register_drawing_pdf(
+                pdf_bytes=replacement_pdf.getvalue(),
+                pdf_name=replacement_pdf.name,
+                qr_text=clean_text(selected_drawing.get("qr_code", "")),
+                product_id=clean_text(selected_drawing.get("product_id", "")),
+                product_model=clean_text(selected_drawing.get("product_model", "")),
+                version=clean_text(selected_drawing.get("version", "")),
+                make_current=True,
+            )
+        st.success(f"替换PDF已作为当前版本入库：{registration['drawing'].get('drawing_id')}")
+
+    confirm_delete = action_cols[2].checkbox("确认删除绑定")
+    if action_cols[2].button("删除图纸绑定", disabled=not confirm_delete, width="stretch"):
+        deleted = delete_drawing(selected_drawing.get("drawing_id", ""))
+        if deleted:
+            st.success("已删除图纸库绑定记录。PDF文件仍保留在本地目录。")
+        else:
+            st.error("删除失败：未找到该图纸。")
+
+
 def render_records_page() -> None:
     st.subheader("检测记录")
     records = load_quality_records(limit=200)
@@ -571,6 +905,8 @@ def render_records_page() -> None:
             "操作员": record.get("operator", ""),
             "工位": record.get("workstation", ""),
             "产品ID": record.get("product_id", ""),
+            "图纸ID": record.get("drawing_id", ""),
+            "图纸版本": record.get("drawing_version", ""),
             "SN": record.get("sn", ""),
             "批次": record.get("batch_no", ""),
             "结果": record.get("result", ""),
@@ -913,6 +1249,8 @@ def main() -> None:
     page = render_sidebar()
     if page == "现场检测端":
         render_inspection_page()
+    elif page == "图纸库管理":
+        render_drawing_library_page()
     elif page == "后台管理":
         render_admin_page()
     elif page == "检测记录":

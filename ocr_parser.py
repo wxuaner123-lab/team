@@ -9,6 +9,7 @@ import numpy as np
 from paddleocr import PaddleOCR
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
+from energy_label_parser import merge_energy_fields, parse_energy_label_fields
 from field_extractor import extract_fields_from_text, summarize_fields
 
 
@@ -68,6 +69,22 @@ def get_result_dict(result: Any) -> dict:
 def get_result_data(result_dict: dict) -> dict:
     result_data = result_dict.get("res", result_dict)
     return result_data if isinstance(result_data, dict) else {}
+
+
+def to_plain_points(value: Any) -> Any:
+    try:
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+    except Exception:
+        pass
+    if isinstance(value, (list, tuple)):
+        return [to_plain_points(item) for item in value]
+    try:
+        if isinstance(value, (np.integer, np.floating)):
+            return float(value)
+    except Exception:
+        pass
+    return value
 
 
 def resize_for_ocr(image: Image.Image, max_side: int = 1800) -> Image.Image:
@@ -271,6 +288,8 @@ def recognize_image(
         result_data = get_result_data(get_result_dict(result))
         rec_texts = result_data.get("rec_texts") or []
         rec_scores = result_data.get("rec_scores") or []
+        rec_boxes = result_data.get("rec_boxes") or []
+        rec_polys = result_data.get("rec_polys") or result_data.get("dt_polys") or []
         for index, text in enumerate(rec_texts):
             clean_line = str(text).strip()
             if not clean_line:
@@ -283,11 +302,15 @@ def recognize_image(
                 continue
             all_texts.append(clean_line)
             scores.append(score)
+            box = to_plain_points(rec_boxes[index]) if index < len(rec_boxes) else None
+            poly = to_plain_points(rec_polys[index]) if index < len(rec_polys) else None
             detail_rows.append(
                 {
                     "序号": len(detail_rows) + 1,
                     "识别文字": clean_line,
                     "置信度": round(score, 4),
+                    "位置框": box,
+                    "文字多边形": poly,
                 }
             )
 
@@ -338,11 +361,14 @@ def recognize_label(
             fast_mode=True,
         )
         fields = extract_fields_from_text(raw_text)
+        energy_fields, field_match_debug = parse_energy_label_fields(raw_text, rows)
+        fields = merge_energy_fields(fields, energy_fields)
         score = score_candidate(raw_text, fields, confidence)
         result = {
             "raw_text": raw_text,
             "normalized_text": raw_text,
             "fields": fields,
+            "field_match_debug": field_match_debug,
             "confidence": round(confidence, 4),
             "ocr_rows": rows,
             "selected_preprocess": candidate["name"],

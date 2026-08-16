@@ -117,6 +117,13 @@ FIELD_CONFIG: dict[str, FieldRule] = {
         ocr_digit_fix=True,
         patterns=(r"洗涤\s*/\s*脱水容量[^\n\r\d]{0,20}([0-9OISBl.]+\s*/\s*[0-9OISBl.]+)",),
     ),
+    "依据国家标准": FieldRule(
+        name="依据国家标准",
+        aliases=("依据国家标准", "国家标准", "执行标准", "STANDARD", "GB"),
+        compare_type="code",
+        required=True,
+        patterns=(r"依据国家标准\s*[:：]?\s*([A-Za-z]{1,4}\s*[0-9.\- ]{5,30})",),
+    ),
     "年耗电量": FieldRule(
         name="年耗电量",
         aliases=("年耗电量", "ANNUAL ENERGY CONSUMPTION", "ANNUAL ENERGY CONSUMPTION KWH"),

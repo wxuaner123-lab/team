@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from dynamic_field_template import standard_fields_to_template, template_to_standard_fields
 from field_config import FIELD_NAMES, clean_text
 
 
@@ -17,6 +18,7 @@ DRAWINGS_DIR = MASTER_DATA_DIR / "drawings"
 PRODUCTS_FILE = MASTER_DATA_DIR / "products.json"
 DRAWINGS_FILE = MASTER_DATA_DIR / "drawings.json"
 FIELD_TEMPLATES_FILE = MASTER_DATA_DIR / "field_templates.json"
+QR_BINDINGS_FILE = MASTER_DATA_DIR / "qr_bindings.json"
 INSPECTION_FILE = PROJECT_ROOT / "records" / "quality_terminal_records.jsonl"
 EVIDENCE_DIR = PROJECT_ROOT / "records" / "evidence"
 
@@ -162,6 +164,8 @@ def ensure_storage() -> None:
 
     if not FIELD_TEMPLATES_FILE.exists():
         save_field_templates(build_field_templates_from_products_and_drawings())
+    if not QR_BINDINGS_FILE.exists():
+        save_qr_bindings(build_default_qr_bindings())
 
 
 def load_json_file(path: Path, default: Any) -> Any:
@@ -193,11 +197,44 @@ def save_products(products: list[dict[str, Any]]) -> None:
 
 def load_drawings() -> list[dict[str, Any]]:
     drawings = load_json_file(DRAWINGS_FILE, DEFAULT_DRAWINGS)
-    return drawings if isinstance(drawings, list) else []
+    if not isinstance(drawings, list):
+        return []
+    return [
+        normalize_drawing_template_meta(drawing)
+        for drawing in drawings
+        if isinstance(drawing, dict)
+    ]
 
 
 def save_drawings(drawings: list[dict[str, Any]]) -> None:
     write_json_file(DRAWINGS_FILE, drawings)
+
+
+def template_status_label(status: str) -> str:
+    return {
+        "unconfirmed": "未确认",
+        "confirmed": "已确认",
+        "needs_review": "需复核",
+    }.get(clean_text(status), "未确认")
+
+
+def normalize_template_status(status: str) -> str:
+    status = clean_text(status)
+    reverse = {"未确认": "unconfirmed", "已确认": "confirmed", "需复核": "needs_review"}
+    if status in reverse:
+        return reverse[status]
+    if status in {"unconfirmed", "confirmed", "needs_review"}:
+        return status
+    return "unconfirmed"
+
+
+def next_template_version(current: str) -> str:
+    import re
+
+    match = re.search(r"(\d+)$", clean_text(current))
+    if not match:
+        return "v1"
+    return f"v{int(match.group(1)) + 1}"
 
 
 def load_field_templates() -> list[dict[str, Any]]:
@@ -207,6 +244,152 @@ def load_field_templates() -> list[dict[str, Any]]:
 
 def save_field_templates(templates: list[dict[str, Any]]) -> None:
     write_json_file(FIELD_TEMPLATES_FILE, templates)
+
+
+def load_qr_bindings() -> list[dict[str, Any]]:
+    if not QR_BINDINGS_FILE.exists():
+        return []
+    try:
+        data = json.loads(QR_BINDINGS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def save_qr_bindings(bindings: list[dict[str, Any]]) -> None:
+    write_json_file(QR_BINDINGS_FILE, bindings)
+
+
+def build_default_qr_bindings() -> list[dict[str, Any]]:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    bindings: list[dict[str, Any]] = []
+    products = read_json_file_direct(PRODUCTS_FILE, DEFAULT_PRODUCTS)
+    drawings = read_json_file_direct(DRAWINGS_FILE, DEFAULT_DRAWINGS)
+    for product in products if isinstance(products, list) else []:
+        product_id = clean_text(product.get("product_id", ""))
+        for qr_text in [product.get("qr_code", ""), *product.get("qr_samples", [])]:
+            if not clean_text(qr_text):
+                continue
+            bindings.append(
+                {
+                    "qr_text": clean_text(qr_text),
+                    "qr_type": "product_qr",
+                    "product_id": product_id,
+                    "drawing_id": clean_text(product.get("current_drawing_id", "")),
+                    "model": clean_text(product.get("product_model", "")),
+                    "binding_status": "active",
+                    "created_at": now,
+                    "created_by": "system_migration",
+                    "note": "由产品二维码样例自动生成",
+                }
+            )
+    for drawing in drawings if isinstance(drawings, list) else []:
+        qr_text = clean_text(drawing.get("qr_code", ""))
+        if not qr_text:
+            continue
+        bindings.append(
+            {
+                "qr_text": qr_text,
+                "qr_type": "drawing_qr",
+                "product_id": clean_text(drawing.get("product_id", "")),
+                "drawing_id": clean_text(drawing.get("drawing_id", "")),
+                "model": clean_text(drawing.get("product_model", "")),
+                "binding_status": "active",
+                "created_at": now,
+                "created_by": "system_migration",
+                "note": "由图纸二维码自动生成",
+            }
+        )
+    return dedupe_qr_bindings(bindings)
+
+
+def dedupe_qr_bindings(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for binding in bindings:
+        key = (
+            normalize_key(binding.get("qr_text", "")),
+            clean_text(binding.get("product_id", "")),
+            clean_text(binding.get("drawing_id", "")),
+        )
+        if not key[0] or key in seen:
+            continue
+        deduped.append(binding)
+        seen.add(key)
+    return deduped
+
+
+def upsert_qr_binding(
+    qr_text: str,
+    qr_type: str,
+    product_id: str = "",
+    drawing_id: str = "",
+    model: str = "",
+    created_by: str = "demo_user",
+    note: str = "",
+) -> dict[str, Any]:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    normalized_qr = normalize_key(qr_text)
+    bindings = [
+        binding
+        for binding in load_qr_bindings()
+        if normalize_key(binding.get("qr_text", "")) != normalized_qr
+    ]
+    binding = {
+        "qr_text": clean_text(qr_text),
+        "qr_type": clean_text(qr_type) or "unknown_qr",
+        "product_id": clean_text(product_id),
+        "drawing_id": clean_text(drawing_id),
+        "model": clean_text(model),
+        "binding_status": "active",
+        "created_at": now,
+        "created_by": clean_text(created_by) or "demo_user",
+        "note": clean_text(note),
+    }
+    bindings.append(binding)
+    save_qr_bindings(dedupe_qr_bindings(bindings))
+    return binding
+
+
+def bindings_for_drawing(drawing_id: str) -> list[dict[str, Any]]:
+    normalized_id = normalize_key(drawing_id)
+    return [
+        binding
+        for binding in load_qr_bindings()
+        if binding.get("binding_status", "active") == "active"
+        and normalize_key(binding.get("drawing_id", "")) == normalized_id
+    ]
+
+
+def active_binding_for_qr(qr_text: str) -> dict[str, Any] | None:
+    normalized_qr = normalize_key(qr_text)
+    for binding in load_qr_bindings():
+        if (
+            binding.get("binding_status", "active") == "active"
+            and normalize_key(binding.get("qr_text", "")) == normalized_qr
+        ):
+            return binding
+    return None
+
+
+def normalize_drawing_template_meta(drawing: dict[str, Any], now: str | None = None) -> dict[str, Any]:
+    now = now or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    migrated = dict(drawing)
+    migrated.setdefault("template_status", "unconfirmed")
+    migrated["template_status"] = normalize_template_status(migrated.get("template_status", ""))
+    migrated.setdefault("template_version", "v1")
+    migrated.setdefault("template_updated_at", migrated.get("update_time", now))
+    migrated.setdefault("template_updated_by", "")
+    migrated.setdefault("template_confirmed_at", "")
+    migrated.setdefault("template_confirmed_by", "")
+    template = migrated.get("field_template", [])
+    if isinstance(template, list):
+        migrated["field_template"] = [
+            {**item, "is_deleted": bool(item.get("is_deleted", False))}
+            for item in template
+            if isinstance(item, dict)
+        ]
+    return migrated
 
 
 def first_non_empty(values: Any) -> str:
@@ -568,6 +751,102 @@ def lookup_product_and_drawing(
     return None, None, qr_payload
 
 
+def resolve_qr_match(qr_text: str) -> dict[str, Any]:
+    from qr_parser import parse_qr_content
+
+    raw = clean_text(qr_text)
+    drawing_ids = {clean_text(drawing.get("drawing_id", "")) for drawing in load_drawings()}
+    drawing_qrs = {clean_text(drawing.get("qr_code", "")) for drawing in load_drawings()}
+    qr_result = parse_qr_content(raw, drawing_ids, drawing_qrs)
+    qr_payload = parse_qr_payload(raw)
+    binding = active_binding_for_qr(raw)
+    is_manual_binding = False
+
+    if binding:
+        is_manual_binding = clean_text(binding.get("created_by", "")) not in {"system_migration", ""}
+        product = get_product(clean_text(binding.get("product_id", "")))
+        drawing = get_drawing(clean_text(binding.get("drawing_id", "")))
+        if not drawing and product:
+            drawing = get_current_drawing_for_product(product.get("product_id", ""))
+        if drawing and not product:
+            product = get_product(clean_text(drawing.get("product_id", "")))
+        return qr_match_result(
+            qr_result,
+            qr_payload,
+            product,
+            drawing,
+            "matched_drawing" if drawing else "matched_product_no_drawing",
+            "二维码命中已保存绑定关系。",
+            is_manual_binding,
+        )
+
+    parsed = qr_result.get("parsed_fields", {})
+    qr_type = qr_result.get("qr_type", "unknown_qr")
+
+    if qr_type == "drawing_qr":
+        drawing = None
+        drawing_lookup = clean_text(parsed.get("drawing_id", "")) or raw
+        for candidate in load_drawings():
+            if normalize_key(drawing_lookup) in {
+                normalize_key(candidate.get("drawing_id", "")),
+                normalize_key(candidate.get("qr_code", "")),
+            }:
+                drawing = candidate
+                break
+        if drawing:
+            product = get_product(clean_text(drawing.get("product_id", "")))
+            return qr_match_result(qr_result, qr_payload, product, drawing, "matched_drawing", "二维码匹配到图纸记录。", False)
+        return qr_match_result(qr_result, qr_payload, None, None, "no_match", "识别为图纸二维码，但未找到对应图纸。", False)
+
+    if qr_type == "product_qr":
+        product_id = clean_text(parsed.get("product_id", ""))
+        product = get_product(product_id) if product_id else None
+        if not product:
+            product, _ = lookup_product(raw)
+        if product:
+            drawings = list_drawings_for_product(product.get("product_id", ""))
+            if len(drawings) == 1:
+                return qr_match_result(qr_result, qr_payload, product, drawings[0], "matched_drawing", "产品二维码匹配到产品及当前图纸。", False)
+            if len(drawings) > 1:
+                return qr_match_result(qr_result, qr_payload, product, drawings[0], "matched_product_with_drawings", "产品二维码匹配到产品，该产品存在多张图纸。", False, drawings)
+            return qr_match_result(qr_result, qr_payload, product, None, "matched_product_no_drawing", "产品二维码匹配到产品，但尚未绑定图纸。", False)
+        return qr_match_result(qr_result, qr_payload, None, None, "no_match", "识别为产品二维码，但未找到产品或图纸绑定。", False)
+
+    if qr_type == "label_url_qr":
+        return qr_match_result(qr_result, qr_payload, None, None, "label_url_only", "当前二维码像是标签/平台链接，不建议直接作为产品ID使用。", False)
+
+    product, drawing, legacy_payload = lookup_product_and_drawing(raw)
+    if drawing:
+        return qr_match_result(qr_result, legacy_payload, product, drawing, "matched_drawing", "未知类型二维码命中既有图纸/产品样例。", False)
+    if product:
+        return qr_match_result(qr_result, legacy_payload, product, None, "matched_product_no_drawing", "未知类型二维码命中产品，但没有图纸。", False)
+    return qr_match_result(qr_result, qr_payload, None, None, "unknown", "未找到该二维码对应的产品或图纸，请上传图纸或人工绑定。", False)
+
+
+def qr_match_result(
+    qr_result: dict[str, Any],
+    qr_payload: dict[str, str],
+    product: dict[str, Any] | None,
+    drawing: dict[str, Any] | None,
+    match_status: str,
+    reason: str,
+    is_manual_binding: bool,
+    drawings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "qr_result": qr_result,
+        "qr_payload": qr_payload,
+        "product": product,
+        "drawing": drawing,
+        "drawings": drawings or ([] if drawing is None else [drawing]),
+        "match_status": match_status,
+        "match_reason": reason,
+        "matched_product_id": clean_text((product or {}).get("product_id", "")),
+        "matched_drawing_id": clean_text((drawing or {}).get("drawing_id", "")),
+        "is_manual_binding": is_manual_binding,
+    }
+
+
 def save_pdf_bytes_to_library(
     pdf_bytes: bytes,
     pdf_name: str,
@@ -651,6 +930,66 @@ def update_drawing_metadata(
     return updated_drawing
 
 
+def update_drawing_field_template(
+    drawing_id: str,
+    field_template: list[dict[str, Any]],
+    template_status: str | None = None,
+    updated_by: str = "",
+) -> dict[str, Any] | None:
+    drawings = load_drawings()
+    updated_drawing: dict[str, Any] | None = None
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    standard_fields = template_to_standard_fields(field_template)
+
+    for drawing in drawings:
+        if drawing.get("drawing_id") != drawing_id:
+            continue
+        normalized_status = normalize_template_status(template_status or drawing.get("template_status", ""))
+        previous_version = clean_text(drawing.get("template_version", "")) or "v1"
+        drawing["field_template"] = field_template
+        drawing["standard_fields"] = standard_fields
+        drawing["update_time"] = now
+        drawing["template_status"] = normalized_status
+        drawing["template_version"] = next_template_version(previous_version)
+        drawing["template_updated_at"] = now
+        drawing["template_updated_by"] = clean_text(updated_by)
+        if normalized_status == "confirmed":
+            drawing["template_confirmed_at"] = now
+            drawing["template_confirmed_by"] = clean_text(updated_by) or "demo_user"
+        elif normalized_status != "confirmed":
+            drawing.setdefault("template_confirmed_at", "")
+            drawing.setdefault("template_confirmed_by", "")
+        updated_drawing = drawing
+        break
+
+    if updated_drawing is None:
+        return None
+    save_drawings(drawings)
+
+    product_id = clean_text(updated_drawing.get("product_id", ""))
+    product = get_product(product_id)
+    if product is not None:
+        upsert_product(
+            {
+                **product,
+                "standard_fields": standard_fields,
+                "required_fields": [
+                    field_name
+                    for field_name, value in standard_fields.items()
+                    if clean_text(value)
+                ],
+                "updated_at": now,
+            }
+        )
+    replace_field_templates(
+        product_id=product_id,
+        drawing_id=drawing_id,
+        standard_fields=standard_fields,
+        source="drawing_dynamic_template",
+    )
+    return updated_drawing
+
+
 def register_drawing_pdf(
     pdf_bytes: bytes,
     pdf_name: str,
@@ -680,7 +1019,8 @@ def register_drawing_pdf(
         debug_output_dir=PROJECT_ROOT / "debug_output" / "drawing_library",
         file_stem=safe_filename_part(inferred_product_id),
     )
-    standard_fields = normalize_standard_fields(drawing_result.get("fields", {}))
+    field_template = drawing_result.get("field_template") or standard_fields_to_template(drawing_result.get("fields", {}))
+    standard_fields = template_to_standard_fields(field_template) or normalize_standard_fields(drawing_result.get("fields", {}))
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     drawing_id = generate_drawing_id(
         inferred_product_id,
@@ -701,6 +1041,15 @@ def register_drawing_pdf(
         "update_time": now,
         "is_current": make_current,
         "standard_fields": standard_fields,
+        "field_template": field_template,
+        "template_status": "unconfirmed",
+        "template_version": "v1",
+        "template_updated_at": now,
+        "template_updated_by": "",
+        "template_confirmed_at": "",
+        "template_confirmed_by": "",
+        "drawing_ocr_text": drawing_result.get("raw_text", ""),
+        "drawing_ocr_rows": drawing_result.get("ocr_rows", []),
         "parse_mode": drawing_result.get("parse_mode", ""),
         "page_count": drawing_result.get("page_count", ""),
         "warnings": drawing_result.get("warnings", []),
@@ -749,6 +1098,16 @@ def register_drawing_pdf(
         standard_fields=standard_fields,
         source="drawing",
     )
+    if qr_code:
+        upsert_qr_binding(
+            qr_text=qr_code,
+            qr_type="drawing_qr",
+            product_id=inferred_product_id,
+            drawing_id=drawing_id,
+            model=inferred_model,
+            created_by="system",
+            note="图纸上传时自动绑定",
+        )
 
     return {
         "product": product_record,

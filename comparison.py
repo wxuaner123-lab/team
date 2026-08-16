@@ -11,6 +11,24 @@ FIELD_ALIASES = {
     for field_name, rule in FIELD_CONFIG.items()
 }
 
+FIELD_KEY_COMPARE_ALIASES = {
+    "model_number": "规格型号",
+    "energy_class": "能效等级",
+    "annual_energy_consumption": "年耗电量",
+    "annual_water_consumption": "年耗水量",
+    "capacity": "额定容量",
+    "made_in": "制造地",
+    "brand_name": "品牌",
+    "standard_reference_no": "依据国家标准",
+    "registration_no": "注册号",
+}
+
+UNIT_OPTIONAL_FIELDS = {"年耗电量", "年耗水量", "容量", "额定容量", "annual_energy_consumption", "annual_water_consumption", "capacity"}
+
+
+def compare_rule_name(field_name: str) -> str:
+    return FIELD_KEY_COMPARE_ALIASES.get(field_name, field_name)
+
 
 def extract_fields_from_label_text(label_text: str) -> dict[str, str]:
     """
@@ -41,10 +59,13 @@ def iter_comparison_fields(
         if clean_text(drawing_fields.get(field_name, ""))
         or clean_text(label_fields.get(field_name, ""))
     ]
-
-    # 保底输出原MVP六字段，避免页面/报告没有任何列可看。
-    if not field_names:
-        return FIELD_NAMES[:6]
+    seen = set(field_names)
+    for source in (drawing_fields, label_fields):
+        for field_name, value in source.items():
+            clean_name = clean_text(field_name)
+            if clean_name and clean_name not in seen and clean_text(value):
+                field_names.append(clean_name)
+                seen.add(clean_name)
 
     return field_names
 
@@ -53,42 +74,84 @@ def compare_single_field(
     field_name: str,
     drawing_value: str,
     label_value: str,
+    label_debug: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    rule = FIELD_CONFIG.get(field_name)
+    rule_name = compare_rule_name(field_name)
+    rule = FIELD_CONFIG.get(rule_name)
     drawing_normalized = normalize_value(
-        field_name,
+        rule_name,
         drawing_value,
     )
     label_normalized = normalize_value(
-        field_name,
+        rule_name,
         label_value,
     )
+    drawing_number = first_number(drawing_normalized)
+    label_number = first_number(label_normalized)
+    raw_candidate_values = (label_debug or {}).get("strong_candidate_values") or (label_debug or {}).get("candidate_values", [])
+    candidate_values = [
+        clean_text(value)
+        for value in raw_candidate_values
+        if clean_text(value)
+    ]
+    candidate_normalized_values = {
+        normalize_value(rule_name, value)
+        for value in candidate_values
+    }
+    field_confidence = float((label_debug or {}).get("confidence", 0) or 0)
+    has_candidate_conflict = bool((label_debug or {}).get("needs_review")) or len(
+        set(candidate_normalized_values)
+    ) > 1
 
     if not drawing_value and not label_value:
         status = "not_applicable"
-        result = "无法判断"
+        result = "NEED_REVIEW"
         reason = "图纸和标签均未识别到该字段。"
         confidence = 0.0
     elif not drawing_value:
         status = "drawing_missing"
-        result = "无法判断"
+        result = "NEED_REVIEW"
         reason = "图纸字段未识别，无法判断标签是否一致。"
         confidence = 0.0
     elif not label_value:
         status = "label_missing"
-        result = "无法判断"
-        reason = "标签字段缺失或OCR未识别，需要人工确认。"
+        result = "NEED_REVIEW"
+        reason = "标签字段缺失或OCR未定位，需要人工确认。"
         confidence = 0.0
-    elif drawing_normalized == label_normalized:
-        status = "match"
-        result = "PASS"
-        reason = "标准化后完全一致。"
-        confidence = 0.98
+    elif drawing_normalized == label_normalized or (
+        field_name in UNIT_OPTIONAL_FIELDS
+        and drawing_number
+        and label_number
+        and drawing_number == label_number
+    ):
+        if has_candidate_conflict or 0 < field_confidence < 0.50:
+            status = "match_need_review"
+            result = "NEED_REVIEW"
+            reason = "识别值与图纸一致，但存在多个候选值或字段定位置信度偏低，需要人工确认。"
+            confidence = max(field_confidence, 0.50)
+        else:
+            status = "match"
+            result = "PASS"
+            reason = "图纸标准值与标签识别值标准化后一致。"
+            if drawing_normalized != label_normalized:
+                reason = "数值一致，标签单位缺失但字段锚点明确。"
+            confidence = max(field_confidence, 0.98)
     else:
-        status = "mismatch"
-        result = "FAIL"
-        reason = "标准化后仍不一致。"
-        confidence = 0.95
+        if drawing_normalized in candidate_normalized_values:
+            status = "candidate_conflict"
+            result = "NEED_REVIEW"
+            reason = "最终选择值与图纸不一致，但OCR候选值中存在图纸标准值，疑似字段错位，需要人工确认。"
+            confidence = max(field_confidence, 0.55)
+        elif has_candidate_conflict or 0 < field_confidence < 0.55:
+            status = "low_confidence_mismatch"
+            result = "NEED_REVIEW"
+            reason = "识别值与图纸不一致，但字段定位存在冲突或置信度不足，暂不判定产品失败。"
+            confidence = max(field_confidence, 0.4)
+        else:
+            status = "mismatch"
+            result = "FAIL"
+            reason = "图纸标准值与标签识别值明确不一致。"
+            confidence = max(field_confidence, 0.95)
 
     return {
         "字段名称": field_name,
@@ -102,13 +165,23 @@ def compare_single_field(
         "检测结果": result,
         "异常说明": reason,
         "是否必填": "是" if rule and rule.required else "否",
-        "置信度": confidence,
+        "置信度": round(confidence, 4),
+        "OCR候选值": " / ".join(candidate_values),
+        "字段匹配说明": clean_text((label_debug or {}).get("select_reason", "")),
     }
+
+
+def first_number(value: str) -> str:
+    import re
+
+    match = re.search(r"[0-9]+(?:\.[0-9]+)?", value)
+    return match.group(0) if match else ""
 
 
 def compare_fields(
     drawing_fields: dict[str, Any],
     label_fields: dict[str, Any],
+    label_debug: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """
     对图纸字段和标签字段逐项比较。
@@ -140,13 +213,14 @@ def compare_fields(
                 field_name,
                 drawing_value,
                 label_value,
+                (label_debug or {}).get(field_name, {}),
             )
         )
 
     if any(row["检测结果"] == "FAIL" for row in comparison_rows):
         overall_result = "FAIL"
-    elif any(row["检测结果"] == "无法判断" for row in comparison_rows):
-        overall_result = "待人工确认"
+    elif any(row["检测结果"] == "NEED_REVIEW" for row in comparison_rows):
+        overall_result = "NEED_REVIEW"
     else:
         overall_result = "PASS"
 

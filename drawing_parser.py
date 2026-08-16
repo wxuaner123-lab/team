@@ -8,6 +8,11 @@ from typing import Any
 import fitz
 from PIL import Image
 
+from dynamic_field_template import (
+    build_dynamic_field_template,
+    standard_fields_to_template,
+    template_to_standard_fields,
+)
 from field_extractor import extract_fields_from_text, summarize_fields
 from ocr_parser import recognize_image, save_debug_image
 
@@ -165,11 +170,20 @@ def extract_drawing_content(
                 warnings.append(f"PDF OCR失败，保留文字层结果：{error}")
 
         fields = extract_fields_from_text(raw_text)
+        summarized_fields = summarize_fields(fields)
+        field_template = build_dynamic_field_template(raw_text, ocr_rows)
+        dynamic_fields = template_to_standard_fields(field_template)
+        if len(dynamic_fields) >= 4 or len(dynamic_fields) >= len(summarized_fields):
+            fields = dynamic_fields
+        elif summarized_fields:
+            field_template = standard_fields_to_template(summarized_fields)
+            fields = summarized_fields
         result = {
             "filename": filename,
             "raw_text": raw_text,
             "normalized_text": raw_text,
             "fields": fields,
+            "field_template": field_template,
             "parse_mode": parse_mode,
             "warnings": warnings,
             "page_count": document.page_count,

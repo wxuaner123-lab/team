@@ -11,6 +11,7 @@ from field_config import (
     find_matching_field,
     normalize_field_label,
 )
+from energy_label_parser import merge_energy_fields, parse_energy_label_fields
 
 
 VALUE_STOP_FIELDS = {
@@ -159,6 +160,8 @@ def extract_fields_from_text(text: str) -> dict[str, str]:
     extract_adjacent_values(lines, fields)
     extract_regex_values(text, fields)
     extract_fallback_known_values(text, fields)
+    energy_fields, _ = parse_energy_label_fields(text, [])
+    fields = merge_energy_fields(fields, energy_fields)
 
     # Keep old and real-data model names interoperable for existing reports.
     if fields.get("规格型号") and not fields.get("产品型号"):

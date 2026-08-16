@@ -1,0 +1,123 @@
+[
+  {
+    "qr_text": "PID=ABC-001;MODEL=ABC-001;SN=SN20260803001;BATCH=B20260803",
+    "qr_type": "product_qr",
+    "product_id": "ABC-001",
+    "drawing_id": "",
+    "model": "ABC-001",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "{\"product_id\":\"ABC-001\",\"model\":\"ABC-001\",\"sn\":\"SN20260803001\",\"batch\":\"B20260803\"}",
+    "qr_type": "product_qr",
+    "product_id": "ABC-001",
+    "drawing_id": "",
+    "model": "ABC-001",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "PID=ICM-2400-A;MODEL=ICM-2400-A;SN=ICM2400A-260701;BATCH=DEMO-BATCH",
+    "qr_type": "product_qr",
+    "product_id": "ICM-2400-A",
+    "drawing_id": "",
+    "model": "ICM-2400-A",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "UNMATCHED-QR-AUTO-BIND-V1",
+    "qr_type": "product_qr",
+    "product_id": "UNMATCHED-QR-AUTO-BIND",
+    "drawing_id": "DRW-UNMATCHED-QR-AUTO-BIND-abe91e4302",
+    "model": "UNMATCHED-QR-AUTO-BIND",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "PDFQR-100-V3",
+    "qr_type": "product_qr",
+    "product_id": "PDFQR-100-V3",
+    "drawing_id": "DRW-PDFQR-100-V3-7b94ee25cd",
+    "model": "PDFQR-100-V3",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "PDFQR-200-V4",
+    "qr_type": "product_qr",
+    "product_id": "PDFQR-200-V4",
+    "drawing_id": "DRW-PDFQR-200-V4-de6f438b0c",
+    "model": "PDFQR-200-V4",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "PDFQR-300-V5",
+    "qr_type": "product_qr",
+    "product_id": "PDFQR-300-V5",
+    "drawing_id": "DRW-PDFQR-300-V5-53940bc2fd",
+    "model": "PDFQR-300-V5",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "REAL-SAMPLE-004",
+    "qr_type": "product_qr",
+    "product_id": "REAL-SAMPLE-004",
+    "drawing_id": "DRW-REAL-SAMPLE-004-39478be0c8",
+    "model": "REAL-SAMPLE-004",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "http://bbqk.com/925rma",
+    "qr_type": "product_qr",
+    "product_id": "http://bbqk.com/925rma",
+    "drawing_id": "DRW-http___bbqk.com_925rma-136bcec733",
+    "model": "http://bbqk.com/925rma",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "https://hazm.gov.om/nb/p/5663",
+    "qr_type": "product_qr",
+    "product_id": "https://hazm.gov.om/nb/p/5663",
+    "drawing_id": "DRW-https___hazm.gov.om_nb_p_5663-7c6741fe48",
+    "model": "https://hazm.gov.om/nb/p/5663",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由产品二维码样例自动生成"
+  },
+  {
+    "qr_text": "ICM-2400-A-V1.2",
+    "qr_type": "drawing_qr",
+    "product_id": "ICM-2400-A",
+    "drawing_id": "DRW-ICM-2400-A-V1-2",
+    "model": "ICM-2400-A",
+    "binding_status": "active",
+    "created_at": "2026-08-14 14:43:21",
+    "created_by": "system_migration",
+    "note": "由图纸二维码自动生成"
+  }
+]

@@ -28,6 +28,7 @@ def get_ocr_engine() -> PaddleOCR:
         _ocr_engine = PaddleOCR(
             lang="ch",
             device="cpu",
+            enable_mkldnn=False,
             use_doc_orientation_classify=True,
             use_doc_unwarping=True,
             use_textline_orientation=True,

@@ -272,6 +272,8 @@ def value_matches_type(text: str, definition: dict[str, Any]) -> bool:
     value_type = definition.get("value_type", "text")
     if value_type == "presence":
         return False
+    if value_type == "text":
+        return bool(text) and len(text) <= 80
     pattern = VALUE_PATTERNS.get(value_type, VALUE_PATTERNS["text"])
     if not pattern.match(text):
         return False
@@ -645,14 +647,67 @@ def match_label_to_template(
             confidence = 0.9 if found else 0.0
         elif anchors:
             candidates = nearby_candidates(anchors[0], rows, definition)
-            value = candidates[0]["value"] if candidates else ""
-            reason = candidates[0]["reason"] if candidates else "定位到字段名，但未找到合理候选值"
-            confidence = min(0.99, max(0.0, float(candidates[0].get("score", 0)) / 140)) if candidates else 0.0
+            standard_value = find_standard_value_in_text(label_raw_text, item, definition)
+            if standard_value:
+                value = standard_value
+                reason = "已定位字段名，标签全文中找到与图纸标准值一致的值"
+                confidence = 0.82
+                if not candidates or candidates[0].get("value") != value:
+                    candidates.insert(
+                        0,
+                        {
+                            "value": value,
+                            "raw_text": value,
+                            "row_index": "",
+                            "confidence": confidence,
+                            "bbox": None,
+                            "score": 120,
+                            "reason": reason,
+                        },
+                    )
+            elif candidates:
+                value = candidates[0]["value"]
+                reason = candidates[0]["reason"]
+                confidence = min(0.99, max(0.0, float(candidates[0].get("score", 0)) / 140))
+            else:
+                fallback_value = fallback_find_value_in_text(label_raw_text, item, definition)
+                value = fallback_value
+                reason = "已定位字段名，使用文本邻近行兜底匹配" if fallback_value else "定位到字段名，但未找到合理候选值"
+                confidence = 0.55 if fallback_value else 0.0
+                if value:
+                    candidates = [
+                        {
+                            "value": value,
+                            "raw_text": value,
+                            "row_index": "",
+                            "confidence": confidence,
+                            "bbox": None,
+                            "score": 70,
+                            "reason": reason,
+                        }
+                    ]
         else:
             candidates = []
-            value = fallback_find_value_in_text(label_raw_text, item, definition)
-            reason = "文本兜底匹配" if value else "标签中未定位字段锚点"
-            confidence = 0.52 if value else 0.0
+            standard_value = find_standard_value_in_text(label_raw_text, item, definition)
+            if standard_value:
+                value = standard_value
+                reason = "字段锚点未稳定识别，但标签全文中找到与图纸标准值一致的值"
+                confidence = 0.72
+                candidates = [
+                    {
+                        "value": value,
+                        "raw_text": value,
+                        "row_index": "",
+                        "confidence": 0.72,
+                        "bbox": None,
+                        "score": 92,
+                        "reason": reason,
+                    }
+                ]
+            else:
+                value = fallback_find_value_in_text(label_raw_text, item, definition)
+                reason = "文本兜底匹配" if value else "标签中未定位字段锚点"
+                confidence = 0.52 if value else 0.0
 
         if value:
             label_fields[field_key] = value
@@ -686,14 +741,38 @@ def match_label_to_template(
 
 
 def definition_for_template_item(item: dict[str, Any]) -> dict[str, Any]:
+    item_keys = {
+        clean_text(item.get("field_id", "")),
+        clean_text(item.get("field_key", "")),
+    }
     for definition in FIELD_DICTIONARY:
-        if definition["field_id"] == item.get("field_id"):
-            return definition
+        if definition["field_id"] in item_keys:
+            aliases = tuple(
+                dict.fromkeys(
+                    (
+                        clean_text(item.get("source_field_name", "")),
+                        clean_text(item.get("display_name_zh", "")),
+                        *definition.get("aliases", ()),
+                    )
+                )
+            )
+            return {**definition, "aliases": tuple(alias for alias in aliases if alias)}
     source_name = clean_text(item.get("source_field_name", "")) or clean_text(item.get("display_name_zh", ""))
+    aliases = tuple(
+        alias
+        for alias in dict.fromkeys(
+            (
+                source_name,
+                clean_text(item.get("display_name_zh", "")),
+                clean_text(item.get("field_key", "")),
+            )
+        )
+        if alias
+    )
     return {
         "field_id": item.get("field_id", source_name),
         "display_name_zh": item.get("display_name_zh", source_name),
-        "aliases": (source_name,),
+        "aliases": aliases or (source_name,),
         "value_type": item.get("value_type", "text"),
         "unit_aliases": (),
     }
@@ -701,15 +780,53 @@ def definition_for_template_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def fallback_find_value_in_text(raw_text: str, item: dict[str, Any], definition: dict[str, Any]) -> str:
     lines = [clean_text(line) for line in raw_text.splitlines() if clean_text(line)]
-    source_key = normalize_key(item.get("source_field_name", ""))
+    anchor_keys = [
+        normalize_key(value)
+        for value in (
+            item.get("source_field_name", ""),
+            item.get("display_name_zh", ""),
+            item.get("field_key", ""),
+            *definition.get("aliases", ()),
+        )
+        if normalize_key(value)
+    ]
     for index, line in enumerate(lines):
-        if source_key and source_key not in normalize_key(line):
+        normalized_line = normalize_key(line)
+        if anchor_keys and not any(anchor_key in normalized_line for anchor_key in anchor_keys):
             continue
         for offset in (-1, 1, -2, 2):
             pos = index + offset
             if 0 <= pos < len(lines) and value_matches_type(lines[pos], definition):
                 return clean_dynamic_value(lines[pos])
     return ""
+
+
+def find_standard_value_in_text(raw_text: str, item: dict[str, Any], definition: dict[str, Any]) -> str:
+    standard_value = clean_text(item.get("standard_value", ""))
+    if not standard_value:
+        return ""
+    raw_compact = comparable_text(raw_text, definition)
+    standard_compact = comparable_text(standard_value, definition)
+    if standard_compact and standard_compact in raw_compact:
+        return standard_value
+    number = first_number(standard_value)
+    value_type = definition.get("value_type", "")
+    if value_type in {"energy", "water", "capacity"} and number and number in raw_compact:
+        return standard_value
+    return ""
+
+
+def comparable_text(value: Any, definition: dict[str, Any]) -> str:
+    text = normalize_value(definition.get("display_name_zh", ""), value)
+    text = text.replace("千瓦时", "KWH").replace("升", "L").replace("千克", "KG")
+    text = re.sub(r"\bLITERS?\b", "L", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bLITRES?\b", "L", text, flags=re.IGNORECASE)
+    return re.sub(r"[^A-Z0-9./:-]+", "", text.upper())
+
+
+def first_number(value: Any) -> str:
+    match = re.search(r"[0-9]+(?:\.[0-9]+)?", clean_text(value))
+    return match.group(0) if match else ""
 
 
 def normalize_template_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

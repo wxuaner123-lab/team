@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from field_config import FIELD_CONFIG, FIELD_NAMES, clean_text, normalize_value
@@ -24,6 +25,12 @@ FIELD_KEY_COMPARE_ALIASES = {
 }
 
 UNIT_OPTIONAL_FIELDS = {"年耗电量", "年耗水量", "容量", "额定容量", "annual_energy_consumption", "annual_water_consumption", "capacity"}
+CODE_LIKE_FIELDS = {"产品型号", "规格型号", "型号", "model_number", "standard_reference_no", "registration_no", "版本号", "序列号"}
+UNIT_NORMALIZATION = (
+    (r"千瓦时|ＫＷＨ|KWH/YEAR|KWH", "KWH"),
+    (r"LITERS?|LITRES?|升", "L"),
+    (r"千克|公斤|KGS?|KG", "KG"),
+)
 
 
 def compare_rule_name(field_name: str) -> str:
@@ -47,6 +54,30 @@ def normalize_compare_value(
     兼容旧调用的比对值标准化函数。
     """
     return normalize_value(field_name, value)
+
+
+def canonical_compare_value(field_name: str, value: Any) -> str:
+    text = normalize_value(compare_rule_name(field_name), value)
+    if not text:
+        return ""
+    for pattern, replacement in UNIT_NORMALIZATION:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    text = text.replace(":", "").replace("：", "")
+    text = re.sub(r"[\s_\-]+", "", text.upper())
+    if field_name in CODE_LIKE_FIELDS or compare_rule_name(field_name) in CODE_LIKE_FIELDS:
+        text = text.translate(str.maketrans({"O": "0", "I": "1", "L": "1"}))
+    return text
+
+
+def number_unit_pair(field_name: str, value: Any) -> tuple[str, str]:
+    canonical = canonical_compare_value(field_name, value)
+    number = first_number(canonical)
+    unit = ""
+    for candidate in ("KWH", "KG", "L"):
+        if candidate in canonical:
+            unit = candidate
+            break
+    return number, unit
 
 
 def iter_comparison_fields(
@@ -86,8 +117,12 @@ def compare_single_field(
         rule_name,
         label_value,
     )
+    drawing_canonical = canonical_compare_value(field_name, drawing_value)
+    label_canonical = canonical_compare_value(field_name, label_value)
     drawing_number = first_number(drawing_normalized)
     label_number = first_number(label_normalized)
+    drawing_number_unit = number_unit_pair(field_name, drawing_value)
+    label_number_unit = number_unit_pair(field_name, label_value)
     raw_candidate_values = (label_debug or {}).get("strong_candidate_values") or (label_debug or {}).get("candidate_values", [])
     candidate_values = [
         clean_text(value)
@@ -98,10 +133,37 @@ def compare_single_field(
         normalize_value(rule_name, value)
         for value in candidate_values
     }
+    candidate_canonical_values = {
+        canonical_compare_value(field_name, value)
+        for value in candidate_values
+    }
     field_confidence = float((label_debug or {}).get("confidence", 0) or 0)
     has_candidate_conflict = bool((label_debug or {}).get("needs_review")) or len(
-        set(candidate_normalized_values)
+        set(candidate_canonical_values or candidate_normalized_values)
     ) > 1
+    numeric_compare_allowed = (
+        field_name in UNIT_OPTIONAL_FIELDS
+        or rule_name in UNIT_OPTIONAL_FIELDS
+        or bool(rule and rule.compare_type in {"unit", "number"})
+    )
+    values_match = (
+        drawing_normalized == label_normalized
+        or drawing_canonical == label_canonical
+        or (
+            numeric_compare_allowed
+            and drawing_number
+            and label_number
+            and drawing_number == label_number
+        )
+        or (
+            numeric_compare_allowed
+            and
+            drawing_number_unit[0]
+            and label_number_unit[0]
+            and drawing_number_unit[0] == label_number_unit[0]
+            and (not drawing_number_unit[1] or not label_number_unit[1] or drawing_number_unit[1] == label_number_unit[1])
+        )
+    )
 
     if not drawing_value and not label_value:
         status = "not_applicable"
@@ -118,26 +180,25 @@ def compare_single_field(
         result = "NEED_REVIEW"
         reason = "标签字段缺失或OCR未定位，需要人工确认。"
         confidence = 0.0
-    elif drawing_normalized == label_normalized or (
-        field_name in UNIT_OPTIONAL_FIELDS
-        and drawing_number
-        and label_number
-        and drawing_number == label_number
-    ):
-        if has_candidate_conflict or 0 < field_confidence < 0.50:
+    elif values_match:
+        if 0 < field_confidence < 0.45:
             status = "match_need_review"
             result = "NEED_REVIEW"
-            reason = "识别值与图纸一致，但存在多个候选值或字段定位置信度偏低，需要人工确认。"
+            reason = "识别值与图纸一致，但字段定位置信度偏低，需要人工确认。"
             confidence = max(field_confidence, 0.50)
         else:
             status = "match"
             result = "PASS"
             reason = "图纸标准值与标签识别值标准化后一致。"
-            if drawing_normalized != label_normalized:
-                reason = "数值一致，标签单位缺失但字段锚点明确。"
+            if drawing_canonical == label_canonical and drawing_normalized != label_normalized:
+                reason = "大小写、空格、冒号或单位写法差异已归一化，标准值一致。"
+            elif drawing_normalized != label_normalized:
+                reason = "数值一致，单位写法差异或标签单位缺失但字段锚点明确。"
+            if has_candidate_conflict:
+                reason += " OCR存在其他候选值，已保留在调试信息中。"
             confidence = max(field_confidence, 0.98)
     else:
-        if drawing_normalized in candidate_normalized_values:
+        if drawing_normalized in candidate_normalized_values or drawing_canonical in candidate_canonical_values:
             status = "candidate_conflict"
             result = "NEED_REVIEW"
             reason = "最终选择值与图纸不一致，但OCR候选值中存在图纸标准值，疑似字段错位，需要人工确认。"
@@ -159,8 +220,10 @@ def compare_single_field(
         "标签值": label_value,
         "图纸原始值": drawing_value,
         "图纸标准化值": drawing_normalized,
+        "图纸比对归一值": drawing_canonical,
         "标签原始值": label_value,
         "标签标准化值": label_normalized,
+        "标签比对归一值": label_canonical,
         "字段状态": status,
         "检测结果": result,
         "异常说明": reason,

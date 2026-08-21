@@ -113,6 +113,14 @@ DEFAULT_DRAWINGS: list[dict[str, Any]] = [
     }
 ]
 
+for default_drawing in DEFAULT_DRAWINGS:
+    if not default_drawing.get("field_template"):
+        default_drawing["field_template"] = standard_fields_to_template(default_drawing.get("standard_fields", {}))
+    default_drawing.setdefault("template_status", "confirmed")
+    default_drawing.setdefault("template_version", "v1")
+    default_drawing.setdefault("template_confirmed_at", default_drawing.get("update_time", ""))
+    default_drawing.setdefault("template_confirmed_by", "demo_seed")
+
 
 def ensure_storage() -> None:
     MASTER_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -375,7 +383,11 @@ def active_binding_for_qr(qr_text: str) -> dict[str, Any] | None:
 def normalize_drawing_template_meta(drawing: dict[str, Any], now: str | None = None) -> dict[str, Any]:
     now = now or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     migrated = dict(drawing)
+    if not migrated.get("field_template") and isinstance(migrated.get("standard_fields"), dict):
+        migrated["field_template"] = standard_fields_to_template(migrated.get("standard_fields", {}))
     migrated.setdefault("template_status", "unconfirmed")
+    if migrated.get("field_template") and clean_text(migrated.get("template_confirmed_by", "")) == "demo_seed":
+        migrated["template_status"] = "confirmed"
     migrated["template_status"] = normalize_template_status(migrated.get("template_status", ""))
     migrated.setdefault("template_version", "v1")
     migrated.setdefault("template_updated_at", migrated.get("update_time", now))

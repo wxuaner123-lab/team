@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from io import BytesIO
+import importlib.util
+import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -55,22 +58,49 @@ from qr_parser import decode_qr_image
 
 
 DEFAULT_REAL_IMAGE_DIR = PROJECT_ROOT / "data" / "实物图" / "data 2"
+DEPLOYABLE_DEMO_DIR = PROJECT_ROOT / "data" / "图纸标签OCR_MVP_五组测试样品"
+BATCH_DEMO_DIR = PROJECT_ROOT / "test_samples" / "图纸标签OCR_MVP_批量横向对比测试样品_兼容版" / "batch_sample_compatible"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 ENERGY_STANDARD_FIELDS = ("产品型号", *ENERGY_LABEL_FIELDS)
+
+
+def first_existing_path(*paths: Path) -> Path:
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
 DEMO_CASES = {
     "样例A：中文能效标签 - 正确标签": {
         "case_id": "demo_cn_pass",
-        "pdf": DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "10022178 MINI2.0CC -JW30-77NBCCQDZW 能效标签2023.12.29.pdf",
-        "label": DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "label 1.jpg",
+        "pdf": first_existing_path(
+            DEPLOYABLE_DEMO_DIR / "sample_001" / "drawing.pdf",
+            BATCH_DEMO_DIR / "drawing.pdf",
+            DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "10022178 MINI2.0CC -JW30-77NBCCQDZW 能效标签2023.12.29.pdf",
+        ),
+        "label": first_existing_path(
+            DEPLOYABLE_DEMO_DIR / "sample_001" / "label.png",
+            BATCH_DEMO_DIR / "label_001_baseline.png",
+            DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "label 1.jpg",
+        ),
         "product_id": "DEMO-CN-ENERGY",
         "product_model": "JW30-77NBCCQDZW",
-        "expected": "用于演示中文能效标签自动比对，真实OCR不稳定字段会进入 NEED_REVIEW。",
+        "expected": "用于演示正确标签自动比对。云端优先使用已随项目提交的可部署样例，本地实物图仅作为兜底。",
         "demo_fail": False,
     },
     "样例B：中文能效标签 - 演示错误字段": {
         "case_id": "demo_cn_fail",
-        "pdf": DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "10022178 MINI2.0CC -JW30-77NBCCQDZW 能效标签2023.12.29.pdf",
-        "label": DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "label 1.jpg",
+        "pdf": first_existing_path(
+            DEPLOYABLE_DEMO_DIR / "sample_001" / "drawing.pdf",
+            BATCH_DEMO_DIR / "drawing.pdf",
+            DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "10022178 MINI2.0CC -JW30-77NBCCQDZW 能效标签2023.12.29.pdf",
+        ),
+        "label": first_existing_path(
+            DEPLOYABLE_DEMO_DIR / "sample_001" / "label.png",
+            BATCH_DEMO_DIR / "label_001_baseline.png",
+            DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "label 1.jpg",
+        ),
         "product_id": "DEMO-CN-FAIL",
         "product_model": "JW30-77NBCCQDZW",
         "expected": "用于演示 FAIL。系统会在结果层构造一个演示用错误字段，不影响真实检测逻辑和历史样本。",
@@ -78,11 +108,19 @@ DEMO_CASES = {
     },
     "样例C：阿拉伯语/英语标签 - 多语言字段": {
         "case_id": "demo_multilingual",
-        "pdf": DEFAULT_REAL_IMAGE_DIR / "Sample_002" / "111.pdf",
-        "label": DEFAULT_REAL_IMAGE_DIR / "Sample_002" / "lQDPKdsaCORxlMfND8DNC9Cwvq3En7-S9JAKNnYpyjWFAA_1.jpg",
+        "pdf": first_existing_path(
+            DEPLOYABLE_DEMO_DIR / "sample_003" / "drawing.pdf",
+            DEFAULT_REAL_IMAGE_DIR / "Sample_002" / "111.pdf",
+            BATCH_DEMO_DIR / "drawing.pdf",
+        ),
+        "label": first_existing_path(
+            DEPLOYABLE_DEMO_DIR / "sample_003" / "label.png",
+            DEFAULT_REAL_IMAGE_DIR / "Sample_002" / "lQDPKdsaCORxlMfND8DNC9Cwvq3En7-S9JAKNnYpyjWFAA_1.jpg",
+            BATCH_DEMO_DIR / "label_001_baseline.png",
+        ),
         "product_id": "DEMO-AR-EN-ENERGY",
         "product_model": "WM1001TMG",
-        "expected": "用于演示多语言字段归一化：英文/阿拉伯语字段显示中文名称，同时保留原始字段名。",
+        "expected": "用于演示多语言字段归一化；云端如未包含本地阿拉伯语样例，会自动退回到已提交的可部署样例并在诊断页说明。",
         "demo_fail": False,
     },
 }
@@ -99,6 +137,11 @@ STATUS_COLOR = {
     "PASS": "#16794c",
     "FAIL": "#b42318",
     "NEED_REVIEW": "#946200",
+    "SYSTEM_NOT_READY": "#946200",
+    "TEMPLATE_UNCONFIRMED": "#946200",
+    "OCR_EMPTY": "#946200",
+    "IMAGE_QUALITY_FAIL": "#b42318",
+    "FIELD_MATCH_NEED_REVIEW": "#946200",
     "待人工确认": "#946200",
 }
 
@@ -134,6 +177,7 @@ def render_sidebar() -> str:
                 "演示模式",
                 "现场检测端",
                 "试运行验收",
+                "演示诊断 / 部署自检",
                 "字段模板确认",
                 "图纸库管理",
                 "后台管理",
@@ -195,7 +239,7 @@ def style_result_rows(dataframe: pd.DataFrame):
             return ["background-color: #ecfdf3; color: #067647;" for _ in row]
         if result == "FAIL":
             return ["background-color: #fef3f2; color: #b42318; font-weight: 700;" for _ in row]
-        if result == "NEED_REVIEW":
+        if result in {"NEED_REVIEW", "SYSTEM_NOT_READY", "TEMPLATE_UNCONFIRMED", "OCR_EMPTY", "FIELD_MATCH_NEED_REVIEW"}:
             return ["background-color: #fffaeb; color: #946200;" for _ in row]
         return ["background-color: #fffaeb; color: #946200;" for _ in row]
 
@@ -236,23 +280,64 @@ def enrich_comparison_rows_with_template(
         )
         template_confidence = float(item.get("confidence", 1) or 0)
         mapping_confidence = float(item.get("mapping_confidence", 1) or 0)
-        if (
+        template_risk = (
             item.get("needs_review")
             or template_confidence < 0.55
             or mapping_status == "NEED_REVIEW"
             or mapping_confidence < 0.55
-        ):
+        )
+        if template_risk and enriched[-1].get("检测结果") == "PASS":
+            enriched[-1]["异常说明"] = f"{enriched[-1].get('异常说明', '')} 图纸字段模板映射置信度偏低，建议后续人工确认模板。".strip()
+        elif template_risk:
             enriched[-1]["检测结果"] = "NEED_REVIEW"
             enriched[-1]["异常说明"] = "图纸字段模板或字段语义映射置信度低，需要人工确认。"
     return enriched
 
 
 def overall_from_rows(rows: list[dict[str, Any]]) -> str:
+    for result in ("IMAGE_QUALITY_FAIL", "SYSTEM_NOT_READY", "TEMPLATE_UNCONFIRMED", "OCR_EMPTY"):
+        if any(row.get("检测结果") == result for row in rows):
+            return result
     if any(row.get("检测结果") == "FAIL" for row in rows):
         return "FAIL"
-    if any(row.get("检测结果") == "NEED_REVIEW" for row in rows):
+    if any(row.get("检测结果") in {"NEED_REVIEW", "FIELD_MATCH_NEED_REVIEW"} for row in rows):
         return "NEED_REVIEW"
     return "PASS"
+
+
+SYSTEM_RESULTS = {"SYSTEM_NOT_READY", "TEMPLATE_UNCONFIRMED", "OCR_EMPTY", "IMAGE_QUALITY_FAIL"}
+
+
+def is_valid_field_template(template: list[dict[str, Any]] | None) -> bool:
+    if not isinstance(template, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and not item.get("is_deleted")
+        and clean_text(item.get("standard_value", ""))
+        and (
+            clean_text(item.get("field_key", ""))
+            or clean_text(item.get("display_name_zh", ""))
+            or clean_text(item.get("source_field_name", ""))
+        )
+        for item in template
+    )
+
+
+def system_issue_row(result: str, reason: str, field_name: str = "系统状态") -> dict[str, Any]:
+    return {
+        "字段名称": field_name,
+        "中文字段名": field_name,
+        "原始字段名": "",
+        "field_key": clean_text(result).lower(),
+        "图纸值": "",
+        "标签值": "",
+        "检测结果": result,
+        "异常说明": reason,
+        "置信度": 0.0,
+        "OCR候选值": "",
+        "字段匹配说明": reason,
+    }
 
 
 def result_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -260,7 +345,7 @@ def result_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
         "total": len(rows),
         "pass": sum(1 for row in rows if row.get("检测结果") == "PASS"),
         "fail": sum(1 for row in rows if row.get("检测结果") == "FAIL"),
-        "review": sum(1 for row in rows if row.get("检测结果") == "NEED_REVIEW"),
+        "review": sum(1 for row in rows if row.get("检测结果") in {"NEED_REVIEW", "FIELD_MATCH_NEED_REVIEW", *SYSTEM_RESULTS}),
     }
 
 
@@ -442,7 +527,7 @@ def style_demo_result_rows(dataframe: pd.DataFrame):
             return ["background-color: #ecfdf3; color: #067647;" for _ in row]
         if result == "FAIL":
             return ["background-color: #fef3f2; color: #b42318; font-weight: 700;" for _ in row]
-        if result == "NEED_REVIEW":
+        if result in {"NEED_REVIEW", "SYSTEM_NOT_READY", "TEMPLATE_UNCONFIRMED", "OCR_EMPTY", "FIELD_MATCH_NEED_REVIEW"}:
             return ["background-color: #fffaeb; color: #946200;" for _ in row]
         return ["" for _ in row]
 
@@ -999,7 +1084,7 @@ def build_inspection_record(
     unknown_fields = [
         row["字段名称"]
         for row in comparison_rows
-        if row.get("检测结果") == "NEED_REVIEW"
+        if row.get("检测结果") in {"NEED_REVIEW", "FIELD_MATCH_NEED_REVIEW", *SYSTEM_RESULTS}
     ]
     return {
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1068,16 +1153,74 @@ def run_demo_detection(
     label_name: str,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    if not case["pdf"].exists():
+        comparison_rows = [
+            system_issue_row(
+                "SYSTEM_NOT_READY",
+                f"演示图纸文件不存在：{case['pdf']}。请确认部署包包含可部署样例或先上传图纸。",
+                "演示图纸",
+            )
+        ]
+        elapsed = time.perf_counter() - started
+        return build_demo_record(case, label_name, "SYSTEM_NOT_READY", comparison_rows, elapsed)
+
     drawing_content = extract_drawing_content(case["pdf"])
     template = drawing_content.get("field_template", [])
     standard_snapshot = template_to_standard_fields(template)
     quality = evaluate_label_image(label_bytes)
+    if not is_valid_field_template(template) or not standard_snapshot:
+        comparison_rows = [
+            system_issue_row(
+                "SYSTEM_NOT_READY",
+                "当前没有加载到有效图纸字段模板，请先进入字段模板确认页面或重新上传图纸。",
+                "图纸字段模板",
+            )
+        ]
+        elapsed = time.perf_counter() - started
+        record = build_demo_record(case, label_name, "SYSTEM_NOT_READY", comparison_rows, elapsed)
+        record.update(
+            {
+                "field_template": template,
+                "standard_snapshot": standard_snapshot,
+                "drawing_ocr_text": drawing_content.get("raw_text", ""),
+                "drawing_parse_mode": drawing_content.get("parse_mode", ""),
+                "drawing_warnings": drawing_content.get("warnings", []),
+                "label_quality": quality,
+                "quality_result": quality_result_summary(quality),
+            }
+        )
+        return record
+
     label_result = recognize_label(
         label_bytes,
         confidence_threshold=0.30,
         debug_output_dir=None,
         file_stem=f"{case['case_id']}_{datetime.now().strftime('%H%M%S')}",
     )
+    if not clean_text(label_result.get("raw_text", "")):
+        comparison_rows = [
+            system_issue_row(
+                "OCR_EMPTY",
+                "标签OCR没有识别到有效文字，请更换图片或重新拍摄。",
+                "标签识别结果",
+            )
+        ]
+        elapsed = time.perf_counter() - started
+        record = build_demo_record(case, label_name, "OCR_EMPTY", comparison_rows, elapsed)
+        record.update(
+            {
+                "field_template": template,
+                "standard_snapshot": standard_snapshot,
+                "drawing_ocr_text": drawing_content.get("raw_text", ""),
+                "drawing_parse_mode": drawing_content.get("parse_mode", ""),
+                "drawing_warnings": drawing_content.get("warnings", []),
+                "label_result": label_result,
+                "label_quality": quality,
+                "quality_result": quality_result_summary(quality),
+            }
+        )
+        return record
+
     if template:
         label_fields_for_compare, dynamic_debug = match_label_to_template(
             template,
@@ -1107,21 +1250,13 @@ def run_demo_detection(
         overall_result = overall_from_rows(comparison_rows)
     else:
         comparison_rows = [
-            {
-                "字段名称": "图纸字段模板",
-                "中文字段名": "图纸标准字段",
-                "原始字段名": "",
-                "field_key": "drawing_field_template",
-                "图纸值": "",
-                "标签值": "",
-                "检测结果": "NEED_REVIEW",
-                "异常说明": "当前图纸尚未生成标准字段，请先确认图纸字段模板。",
-                "置信度": 0.0,
-                "OCR候选值": "",
-                "字段匹配说明": "字段来源为空",
-            }
+            system_issue_row(
+                "SYSTEM_NOT_READY",
+                "当前图纸尚未生成标准字段，请先确认图纸字段模板。",
+                "图纸字段模板",
+            )
         ]
-        overall_result = "NEED_REVIEW"
+        overall_result = "SYSTEM_NOT_READY"
 
     elapsed = time.perf_counter() - started
     fail_fields = [
@@ -1168,16 +1303,71 @@ def run_demo_detection(
     }
 
 
+def build_demo_record(
+    case: dict[str, Any],
+    label_name: str,
+    overall_result: str,
+    comparison_rows: list[dict[str, Any]],
+    elapsed: float,
+) -> dict[str, Any]:
+    fail_fields = [
+        clean_text(row.get("中文字段名") or row.get("字段名称"))
+        for row in comparison_rows
+        if row.get("检测结果") == "FAIL"
+    ]
+    review_fields = [
+        clean_text(row.get("中文字段名") or row.get("字段名称"))
+        for row in comparison_rows
+        if row.get("检测结果") in {"NEED_REVIEW", "FIELD_MATCH_NEED_REVIEW", *SYSTEM_RESULTS}
+    ]
+    return {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "inspection_id": f"DEMO-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        "product_id": case.get("product_id", ""),
+        "product_model": case.get("product_model", ""),
+        "drawing_pdf": str(case["pdf"]),
+        "drawing_name": case["pdf"].name,
+        "label_image_name": label_name,
+        "result": overall_result,
+        "fail_fields": fail_fields,
+        "unknown_fields": review_fields,
+        "field_template": [],
+        "standard_snapshot": {},
+        "comparison_rows": comparison_rows,
+        "drawing_ocr_text": "",
+        "drawing_parse_mode": "",
+        "drawing_warnings": [],
+        "label_result": {},
+        "label_quality": {},
+        "quality_result": {},
+        "qr_result": {
+            "raw_text": f"PID={case.get('product_id', '')};MODEL={case.get('product_model', '')};BATCH=DEMO",
+            "qr_type": "product_qr",
+            "match_status": "matched_drawing" if overall_result not in SYSTEM_RESULTS else "system_not_ready",
+            "matched_product_id": case.get("product_id", ""),
+            "matched_drawing_id": "demo_drawing",
+            "match_reason": "演示模式使用内置样例图纸与标签。",
+            "is_manual_binding": False,
+        },
+        "elapsed_seconds": elapsed,
+        "is_demo_fail_case": bool(case.get("demo_fail")),
+    }
+
+
 def render_inspection_page() -> None:
     product, drawing, qr_payload, _, qr_match = get_product_from_scan()
     if not product:
         return
 
     standard_snapshot = render_standard_snapshot(product, drawing)
+    template = drawing_field_template(drawing)
+    template_ready = bool(standard_snapshot) and is_valid_field_template(template)
+    if not template_ready:
+        st.warning("当前没有加载到有效图纸字段模板，请先进入字段模板确认页面，或在图纸库重新上传/解析图纸。")
     image_bytes, filename, quality_result, quality_can_continue = get_label_image_bytes()
 
     st.subheader("5. 开始检测")
-    can_run = bool(image_bytes and quality_can_continue)
+    can_run = bool(image_bytes and quality_can_continue and template_ready)
     if st.button("开始检测", type="primary", disabled=not can_run, width="stretch"):
         with st.spinner("正在识别标签并比对图纸标准字段..."):
             label_result = recognize_label(
@@ -1186,7 +1376,6 @@ def render_inspection_page() -> None:
                 debug_output_dir=PROJECT_ROOT / "debug_output" / "quality_terminal",
                 file_stem=f"{product.get('product_id', 'product')}_{datetime.now().strftime('%H%M%S')}",
             )
-            template = drawing_field_template(drawing)
             if template:
                 label_fields_for_compare, dynamic_debug = match_label_to_template(
                     template,
@@ -1203,7 +1392,16 @@ def render_inspection_page() -> None:
                 }
             else:
                 label_fields_for_compare = {}
-            if template and standard_snapshot:
+            if not clean_text(label_result.get("raw_text", "")):
+                comparison_rows = [
+                    system_issue_row(
+                        "OCR_EMPTY",
+                        "标签OCR没有识别到有效文字，请更换图片或重新拍摄。",
+                        "标签识别结果",
+                    )
+                ]
+                overall_result = "OCR_EMPTY"
+            elif template and standard_snapshot:
                 comparison_rows, overall_result = compare_fields(
                     standard_snapshot,
                     label_fields_for_compare,
@@ -1213,20 +1411,13 @@ def render_inspection_page() -> None:
                 overall_result = overall_from_rows(comparison_rows)
             else:
                 comparison_rows = [
-                    {
-                        "字段名称": "图纸字段模板",
-                        "原始字段名": "",
-                        "语言": "",
-                        "图纸值": "",
-                        "标签值": "",
-                        "检测结果": "NEED_REVIEW",
-                        "异常说明": "当前图纸字段模板为空，主流程未使用固定字段列表，请重新生成模板或人工确认。",
-                        "置信度": 0.0,
-                        "OCR候选值": "",
-                        "字段匹配说明": "字段来源为空",
-                    }
+                    system_issue_row(
+                        "SYSTEM_NOT_READY",
+                        "当前图纸字段模板为空，主流程未使用固定字段列表，请重新生成模板或人工确认。",
+                        "图纸字段模板",
+                    )
                 ]
-                overall_result = "NEED_REVIEW"
+                overall_result = "SYSTEM_NOT_READY"
             inspection_id = datetime.now().strftime("QT-%Y%m%d-%H%M%S-%f")
             evidence_path = save_evidence_image(
                 image_bytes,
@@ -1678,6 +1869,168 @@ def render_acceptance_page() -> None:
             - 当前验收面板用于试运行准入判断，不等同于正式生产上线验收。
             """
         )
+
+
+def module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+def relative_display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def directory_writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
+def demo_asset_rows() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for case_name, case in DEMO_CASES.items():
+        rows.append(
+            {
+                "样例": case_name,
+                "图纸路径": relative_display_path(case["pdf"]),
+                "图纸状态": "存在" if case["pdf"].exists() else "不存在",
+                "标签路径": relative_display_path(case["label"]),
+                "标签状态": "存在" if case["label"].exists() else "不存在",
+                "是否使用本地实物目录": "是" if DEFAULT_REAL_IMAGE_DIR in case["pdf"].parents or DEFAULT_REAL_IMAGE_DIR in case["label"].parents else "否",
+            }
+        )
+    return rows
+
+
+def data_chain_rows() -> list[dict[str, Any]]:
+    products = load_products()
+    drawings = load_drawings()
+    records = load_quality_records(limit=20)
+    valid_templates = [
+        drawing
+        for drawing in drawings
+        if is_valid_field_template(drawing.get("field_template", []))
+    ]
+    return [
+        {"检查项": "产品主数据", "状态": "是" if products else "否", "说明": f"{len(products)} 条产品记录"},
+        {"检查项": "图纸库记录", "状态": "是" if drawings else "否", "说明": f"{len(drawings)} 条图纸记录"},
+        {"检查项": "有效字段模板", "状态": "是" if valid_templates else "否", "说明": f"{len(valid_templates)} 条可加载字段模板"},
+        {"检查项": "检测记录目录可写", "状态": "是" if directory_writable(PROJECT_ROOT / "records") else "否", "说明": relative_display_path(PROJECT_ROOT / "records")},
+        {"检查项": "图纸库目录可写", "状态": "是" if directory_writable(PROJECT_ROOT / "master_data" / "drawings") else "否", "说明": relative_display_path(PROJECT_ROOT / "master_data" / "drawings")},
+        {"检查项": "近期检测记录", "状态": "是" if records else "否", "说明": f"{len(records)} 条近期记录"},
+    ]
+
+
+def failure_reason_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, int] = {}
+    for row in rows:
+        status = clean_text(row.get("检测结果", "")) or "UNKNOWN"
+        reason = clean_text(row.get("异常说明", "")) or "未提供原因"
+        key = f"{status} | {reason}"
+        buckets[key] = buckets.get(key, 0) + 1
+    return [
+        {"状态/原因": key, "字段数": count}
+        for key, count in sorted(buckets.items(), key=lambda item: item[1], reverse=True)
+    ]
+
+
+def run_demo_self_check(case: dict[str, Any]) -> dict[str, Any]:
+    if not case["pdf"].exists():
+        return {"ok": False, "result": "SYSTEM_NOT_READY", "reason": f"演示图纸不存在：{relative_display_path(case['pdf'])}", "record": None}
+    if not case["label"].exists():
+        return {"ok": False, "result": "SYSTEM_NOT_READY", "reason": f"演示标签不存在：{relative_display_path(case['label'])}", "record": None}
+    try:
+        record = run_demo_detection(case, case["label"].read_bytes(), case["label"].name)
+    except Exception as error:
+        return {"ok": False, "result": "SYSTEM_NOT_READY", "reason": f"演示样例执行失败：{error}", "record": None}
+    rows = record.get("comparison_rows", [])
+    all_review = bool(rows) and all(row.get("检测结果") in {"NEED_REVIEW", "FIELD_MATCH_NEED_REVIEW"} for row in rows)
+    return {
+        "ok": not all_review and record.get("result") not in SYSTEM_RESULTS,
+        "result": record.get("result", ""),
+        "reason": "演示样例链路可运行。" if not all_review else "所有字段均为 NEED_REVIEW，请查看失败原因统计。",
+        "record": record,
+    }
+
+
+def render_deployment_diagnostics_page() -> None:
+    st.subheader("演示诊断 / 部署自检")
+    st.caption("用于排查云端演示为什么没有正常给出 PASS / FAIL / NEED_REVIEW 的原因。")
+
+    env_rows = [
+        {"检查项": "Python版本", "状态": sys.version.split()[0], "说明": sys.executable},
+        {"检查项": "运行目录", "状态": "已识别", "说明": str(PROJECT_ROOT)},
+        {"检查项": "Streamlit", "状态": "是" if module_available("streamlit") else "否", "说明": "页面运行依赖"},
+        {"检查项": "PaddleOCR", "状态": "是" if module_available("paddleocr") else "否", "说明": "OCR引擎"},
+        {"检查项": "PaddlePaddle", "状态": "是" if module_available("paddle") else "否", "说明": "OCR推理后端"},
+        {"检查项": "OpenCV", "状态": "是" if module_available("cv2") else "否", "说明": "图片质量检测"},
+        {"检查项": "当前进程", "状态": os.getenv("STREAMLIT_SERVER_PORT", "本地/未知"), "说明": "Streamlit端口环境变量"},
+    ]
+    st.markdown("**1. 运行环境**")
+    st.dataframe(pd.DataFrame(env_rows), width="stretch", hide_index=True)
+
+    st.markdown("**2. 演示资源**")
+    assets = demo_asset_rows()
+    st.dataframe(pd.DataFrame(assets), width="stretch", hide_index=True)
+
+    st.markdown("**3. 数据链路**")
+    chain_rows = data_chain_rows()
+    st.dataframe(pd.DataFrame(chain_rows), width="stretch", hide_index=True)
+    if any(row["状态"] == "否" for row in chain_rows if row["检查项"] in {"产品主数据", "图纸库记录", "有效字段模板"}):
+        st.warning("核心数据链路不完整：当前没有加载到有效图纸字段模板时，系统会停止检测并提示原因。")
+
+    st.markdown("**4. 运行演示样例自检**")
+    selected_case_name = st.selectbox("选择自检样例", list(DEMO_CASES), key="diagnostic_demo_case")
+    if st.button("运行演示样例自检", type="primary", width="stretch"):
+        with st.spinner("正在运行演示样例自检..."):
+            check = run_demo_self_check(DEMO_CASES[selected_case_name])
+        record = check.get("record")
+        if check["ok"]:
+            st.success(f"自检完成：{check['result']}。{check['reason']}")
+        else:
+            st.warning(f"自检需要处理：{check['result']}。{check['reason']}")
+        if record:
+            render_result_overview(
+                record.get("result", ""),
+                record.get("comparison_rows", []),
+                float(record.get("elapsed_seconds", 0) or 0),
+            )
+            st.dataframe(
+                style_demo_result_rows(demo_result_dataframe(record.get("comparison_rows", []))),
+                width="stretch",
+                hide_index=True,
+            )
+            reason_rows = failure_reason_rows(record.get("comparison_rows", []))
+            if reason_rows:
+                st.markdown("**失败/待确认原因统计**")
+                st.dataframe(pd.DataFrame(reason_rows), width="stretch", hide_index=True)
+            with st.expander("OCR与字段模板调试信息", expanded=False):
+                st.text_area("图纸OCR原文", value=record.get("drawing_ocr_text", ""), height=160)
+                st.text_area("标签OCR原文", value=(record.get("label_result") or {}).get("raw_text", ""), height=160)
+                st.write("图纸动态字段模板")
+                st.dataframe(field_template_dataframe(record.get("field_template", [])), width="stretch", hide_index=True)
+                debug_rows = []
+                for field_name, debug in ((record.get("label_result") or {}).get("field_match_debug") or {}).items():
+                    debug_rows.append(
+                        {
+                            "字段": field_name,
+                            "候选值": " / ".join(debug.get("candidate_values", [])),
+                            "最终选择值": debug.get("selected_value", ""),
+                            "选择原因": debug.get("select_reason", ""),
+                            "置信度": debug.get("confidence", ""),
+                            "需人工确认": "是" if debug.get("needs_review") else "否",
+                        }
+                    )
+                if debug_rows:
+                    st.write("字段匹配候选值")
+                    st.dataframe(pd.DataFrame(debug_rows), width="stretch", hide_index=True)
 
 
 def field_editor(default_fields: dict[str, Any]) -> dict[str, str]:
@@ -2733,6 +3086,8 @@ def main() -> None:
         render_inspection_page()
     elif page == "试运行验收":
         render_acceptance_page()
+    elif page == "演示诊断 / 部署自检":
+        render_deployment_diagnostics_page()
     elif page == "字段模板确认":
         render_template_confirmation_page()
     elif page == "图纸库管理":

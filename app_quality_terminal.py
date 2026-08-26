@@ -61,6 +61,7 @@ from qr_parser import decode_qr_image, parse_qr_content
 
 DEFAULT_REAL_IMAGE_DIR = PROJECT_ROOT / "data" / "实物图" / "data 2"
 DEPLOYABLE_DEMO_DIR = PROJECT_ROOT / "data" / "图纸标签OCR_MVP_五组测试样品"
+DEPLOYABLE_CN_ENERGY_DEMO_DIR = PROJECT_ROOT / "data" / "demo_cn_energy_label"
 BATCH_DEMO_DIR = PROJECT_ROOT / "test_samples" / "图纸标签OCR_MVP_批量横向对比测试样品_兼容版" / "batch_sample_compatible"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 ENERGY_STANDARD_FIELDS = ("产品型号", *ENERGY_LABEL_FIELDS)
@@ -85,30 +86,26 @@ DEMO_CASES = {
         "case_id": "demo_cn_pass",
         "pdf": first_existing_path(
             DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "10022178 MINI2.0CC -JW30-77NBCCQDZW 能效标签2023.12.29.pdf",
-            DEPLOYABLE_DEMO_DIR / "sample_001" / "drawing.pdf",
-            BATCH_DEMO_DIR / "drawing.pdf",
+            DEPLOYABLE_CN_ENERGY_DEMO_DIR / "drawing_cn_energy_demo.pdf",
         ),
         "label": first_existing_path(
             DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "label 1.jpg",
-            DEPLOYABLE_DEMO_DIR / "sample_001" / "label.png",
-            BATCH_DEMO_DIR / "label_001_baseline.png",
+            DEPLOYABLE_CN_ENERGY_DEMO_DIR / "label_cn_energy_demo.png",
         ),
         "product_id": "DEMO-CN-ENERGY",
         "product_model": "JW30-77NBCCQDZW",
-        "expected": "用于演示正确标签自动比对。云端优先使用已随项目提交的可部署样例，本地实物图仅作为兜底。",
+        "expected": "用于演示中文能效标签正确比对。云端使用随项目提交的合成中文能效样例，不再兜底到产品铭牌。",
         "demo_fail": False,
     },
     "样例B：中文能效标签 - 演示错误字段": {
         "case_id": "demo_cn_fail",
         "pdf": first_existing_path(
-            DEPLOYABLE_DEMO_DIR / "sample_001" / "drawing.pdf",
-            BATCH_DEMO_DIR / "drawing.pdf",
             DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "10022178 MINI2.0CC -JW30-77NBCCQDZW 能效标签2023.12.29.pdf",
+            DEPLOYABLE_CN_ENERGY_DEMO_DIR / "drawing_cn_energy_demo.pdf",
         ),
         "label": first_existing_path(
-            DEPLOYABLE_DEMO_DIR / "sample_001" / "label.png",
-            BATCH_DEMO_DIR / "label_001_baseline.png",
             DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "label 1.jpg",
+            DEPLOYABLE_CN_ENERGY_DEMO_DIR / "label_cn_energy_demo.png",
         ),
         "product_id": "DEMO-CN-FAIL",
         "product_model": "JW30-77NBCCQDZW",
@@ -368,7 +365,10 @@ def regression_cases() -> list[dict[str, Any]]:
             "product_id": demo_a.get("product_id", ""),
             "drawing_id": DEMO_A_DRAWING_ID,
             "pdf_path": demo_a["pdf"],
-            "label_path": demo_b["label"],
+            "label_path": first_existing_path(
+                DEPLOYABLE_DEMO_DIR / "sample_001" / "label.png",
+                BATCH_DEMO_DIR / "label_001_baseline.png",
+            ),
             "expected_min_pass": 0,
             "expected_max_fail": 99,
             "expected_quality_risk": True,
@@ -543,13 +543,11 @@ def render_sidebar() -> str:
             [
                 "演示模式",
                 "现场检测端",
+                "图纸库管理",
+                "字段模板确认",
+                "检测记录",
                 "试运行验收",
                 "演示诊断 / 部署自检",
-                "字段模板确认",
-                "图纸库管理",
-                "后台管理",
-                "检测记录",
-                "实物图验证",
             ],
             label_visibility="collapsed",
         )

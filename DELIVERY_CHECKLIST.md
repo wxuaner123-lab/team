@@ -5,7 +5,7 @@
 - 版本名称：图纸驱动标签检测 MVP 试运行候选版
 - 当前分支：`codex/phase1-productized-mvp`
 - 当前本地 commit：`d67483c630cfa607def3ef748a14712cc065b46e`
-- 当前远端状态：本地领先远端 1 个提交，尚未推送到 GitHub
+- 当前远端状态：已推送到 GitHub，远端分支 `codex/phase1-productized-mvp` 最新 commit 为 `c101cb6`
 - 部署入口：`app_quality_terminal.py`
 - 技术栈：Python + Streamlit
 

@@ -78,6 +78,12 @@ FIELD_DICTIONARY: list[dict[str, Any]] = [
         "value_type": "brand",
     },
     {
+        "field_id": "manufacturer_name",
+        "display_name_zh": "生产者名称",
+        "aliases": ("生产者名称", "生产者", "制造商", "制造商名称", "生产企业", "MANUFACTURER", "PRODUCER", "MANUFACTURER NAME"),
+        "value_type": "manufacturer",
+    },
+    {
         "field_id": "model_number",
         "display_name_zh": "型号",
         "aliases": ("MODEL NUMBER", "MODEL NO", "MODEL"),
@@ -95,6 +101,48 @@ FIELD_DICTIONARY: list[dict[str, Any]] = [
         "aliases": ("REGISTRATION NO", "REGISTRATION NUMBER"),
         "value_type": "registration_no",
     },
+    {
+        "field_id": "cleaning_ratio",
+        "display_name_zh": "洗净比",
+        "aliases": ("洗净比", "洗涤比", "WASH RATIO", "CLEANING RATIO"),
+        "value_type": "ratio",
+    },
+    {
+        "field_id": "wash_spin_capacity",
+        "display_name_zh": "洗涤/脱水容量",
+        "aliases": ("洗涤/脱水容量", "洗涤脱水容量", "WASH/SPIN CAPACITY"),
+        "value_type": "capacity_pair",
+    },
+    {
+        "field_id": "wash_capacity",
+        "display_name_zh": "洗涤容量",
+        "aliases": ("洗涤容量", "WASH CAPACITY"),
+        "value_type": "capacity",
+    },
+    {
+        "field_id": "spin_capacity",
+        "display_name_zh": "脱水容量",
+        "aliases": ("脱水容量", "SPIN CAPACITY"),
+        "value_type": "capacity",
+    },
+    {
+        "field_id": "drawing_code",
+        "display_name_zh": "图纸编号",
+        "aliases": ("图纸编号", "图纸编码", "DRAWING CODE", "DRAWING NO", "DWG NO", "DWG"),
+        "value_type": "code",
+    },
+    {
+        "field_id": "label_code",
+        "display_name_zh": "编码",
+        "aliases": ("编码", "标签编码", "LABEL CODE", "CODE"),
+        "value_type": "code",
+    },
+    {
+        "field_id": "label_name",
+        "display_name_zh": "标签名称",
+        "aliases": ("标签名称", "LABEL NAME", "LABEL", "铭牌"),
+        "value_type": "text",
+    },
 ]
 
 
@@ -104,11 +152,15 @@ VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "water": re.compile(r"^[0-9OISBl]{2,8}$", re.IGNORECASE),
     "capacity": re.compile(r"^[0-9OISBl]+(?:\.[0-9OISBl]+)?$", re.IGNORECASE),
     "country": re.compile(r"^[A-Za-z][A-Za-z .-]{1,30}$"),
+    "manufacturer": re.compile(r"^(.{2,80}(公司|集团|厂|有限公司|科技|实业|制造|MANUFACTURER|COMPANY|CO\.?|LTD\.?|LIMITED|INC\.?|CORP\.?).*)$", re.IGNORECASE),
     "brand": re.compile(r"^[A-Za-z][A-Za-z0-9 ._-]{1,40}$"),
     "model": re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{3,50}$"),
     "standard_no": re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .:/_-]{4,40}$"),
     "registration_no": re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .:/_-]{2,30}$"),
     "type": re.compile(r"^(TOP LOAD|FRONT LOAD|TWIN TUB|WITH DRYER)$", re.IGNORECASE),
+    "ratio": re.compile(r"^[0-9OISBl]+(?:\.[0-9OISBl]+)?$", re.IGNORECASE),
+    "capacity_pair": re.compile(r"^[0-9OISBl]+(?:\.[0-9OISBl]+)?\s*/\s*[0-9OISBl]+(?:\.[0-9OISBl]+)?$", re.IGNORECASE),
+    "code": re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .:/_-]{1,50}$"),
     "text": re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .:/_-]{1,60}$"),
 }
 
@@ -136,10 +188,18 @@ FIELD_VALUE_TYPES = {
     "water_consumption_efficiency": "class",
     "water_extraction_efficiency": "class",
     "made_in": "country",
+    "manufacturer_name": "manufacturer",
     "brand_name": "brand",
     "model_number": "model",
     "standard_reference_no": "standard_no",
     "registration_no": "registration_no",
+    "cleaning_ratio": "ratio",
+    "wash_spin_capacity": "capacity_pair",
+    "wash_capacity": "capacity",
+    "spin_capacity": "capacity",
+    "drawing_code": "code",
+    "label_code": "code",
+    "label_name": "text",
     "type": "type",
     "product_category": "presence",
 }
@@ -151,6 +211,88 @@ FIELD_UNIT_ALIASES = {
     "capacity": ("KG", "kg", "千克"),
 }
 
+INSPECTION_FIELD_KEYS = {
+    "model_number",
+    "manufacturer_name",
+    "energy_class",
+    "annual_energy_consumption",
+    "annual_water_consumption",
+    "cleaning_ratio",
+    "wash_spin_capacity",
+    "wash_capacity",
+    "spin_capacity",
+    "standard_reference_no",
+    "capacity",
+    "brand_name",
+    "made_in",
+    "registration_no",
+    "water_consumption_efficiency",
+    "water_extraction_efficiency",
+    "type",
+}
+
+NON_INSPECTION_FIELD_KEYS = {
+    "drawing_code",
+    "label_code",
+    "label_name",
+}
+
+NON_INSPECTION_NAME_HINTS = (
+    "图纸编号",
+    "图纸版本",
+    "编码",
+    "标签名称",
+    "设计人",
+    "审核人",
+    "日期",
+    "材质",
+    "比例",
+    "重量",
+    "图样标记",
+    "备注",
+    "旧底图总号",
+    "DRAWING",
+    "DWG",
+    "LABEL NAME",
+)
+
+INSPECTION_NAME_HINTS = (
+    "型号",
+    "规格型号",
+    "生产者名称",
+    "制造商",
+    "制造商名称",
+    "生产企业",
+    "能效等级",
+    "年耗电量",
+    "耗电量",
+    "年耗水量",
+    "用水量",
+    "洗净比",
+    "洗涤比",
+    "洗涤/脱水容量",
+    "洗涤脱水容量",
+    "洗涤容量",
+    "脱水容量",
+    "依据国家标准",
+    "标准编号",
+    "容量",
+    "品牌名称",
+    "产地",
+    "注册号",
+    "MODEL",
+    "ENERGY CLASS",
+    "ENERGY CONSUMPTION",
+    "WATER CONSUMPTION",
+    "CAPACITY",
+    "BRAND",
+    "MADE IN",
+    "REGISTRATION",
+    "STANDARD",
+)
+
+COUNTRY_VALUES = {"CHINA", "中国", "PRC", "P.R.C", "MADE IN CHINA"}
+
 
 def value_type_for_field_key(field_key: str) -> str:
     return FIELD_VALUE_TYPES.get(field_key, "text")
@@ -160,10 +302,40 @@ def unit_aliases_for_field_key(field_key: str) -> tuple[str, ...]:
     return FIELD_UNIT_ALIASES.get(field_key, ())
 
 
+def default_include_in_inspection(item: dict[str, Any]) -> bool:
+    field_key = clean_text(item.get("field_key", "") or item.get("field_id", ""))
+    display_name = clean_text(item.get("display_name_zh", ""))
+    source_name = clean_text(item.get("source_field_name", ""))
+    haystack = f"{field_key} {display_name} {source_name}".upper()
+    if field_key in NON_INSPECTION_FIELD_KEYS:
+        return False
+    if field_key in INSPECTION_FIELD_KEYS:
+        return True
+    if any(clean_text(hint).upper() in haystack for hint in NON_INSPECTION_NAME_HINTS):
+        return False
+    if field_key.startswith("unknown_"):
+        return any(clean_text(hint).upper() in haystack for hint in INSPECTION_NAME_HINTS)
+    return any(clean_text(hint).upper() in haystack for hint in INSPECTION_NAME_HINTS)
+
+
+def include_in_inspection(item: dict[str, Any]) -> bool:
+    if item.get("is_deleted"):
+        return False
+    raw_value = item.get("include_in_inspection", None)
+    if raw_value is None:
+        return default_include_in_inspection(item)
+    if isinstance(raw_value, str):
+        return raw_value.strip().lower() not in {"false", "0", "否", "不参与检测", "no"}
+    return bool(raw_value)
+
+
 def apply_field_mapping(item: dict[str, Any], unknown_index: int = 1) -> dict[str, Any]:
     source_name = clean_text(item.get("source_field_name", "")) or clean_text(item.get("display_name_zh", ""))
     mapping = map_field_name(source_name, unknown_index=unknown_index)
-    return {
+    mapped_value_type = value_type_for_field_key(mapping["field_key"])
+    item_value_type = clean_text(item.get("value_type", ""))
+    value_type = mapped_value_type if item_value_type in {"", "text"} and mapped_value_type != "text" else (item_value_type or mapped_value_type)
+    mapped = {
         **item,
         "field_key": mapping["field_key"],
         "field_id": mapping["field_key"],
@@ -174,9 +346,13 @@ def apply_field_mapping(item: dict[str, Any], unknown_index: int = 1) -> dict[st
         "mapping_status": mapping["mapping_status"],
         "normalized_field_name": mapping["normalized_text"],
         "matched_alias": mapping["matched_alias"],
-        "value_type": item.get("value_type") or value_type_for_field_key(mapping["field_key"]),
+        "value_type": value_type,
         "needs_review": bool(item.get("needs_review")) or mapping["mapping_status"] == "NEED_REVIEW",
     }
+    mapped["include_in_inspection"] = include_in_inspection(mapped)
+    if not mapped["include_in_inspection"]:
+        mapped["inspection_note"] = "字段属于图纸管理信息，默认不参与现场检测。"
+    return mapped
 
 
 ARABIC_RE = re.compile(r"[\u0600-\u06ff]")
@@ -274,6 +450,8 @@ def value_matches_type(text: str, definition: dict[str, Any]) -> bool:
         return False
     if value_type == "text":
         return bool(text) and len(text) <= 80
+    if value_type == "manufacturer" and is_country_value(text):
+        return False
     pattern = VALUE_PATTERNS.get(value_type, VALUE_PATTERNS["text"])
     if not pattern.match(text):
         return False
@@ -577,10 +755,15 @@ def infer_unit(value: str) -> str:
     return ""
 
 
-def template_to_standard_fields(template: list[dict[str, Any]]) -> dict[str, str]:
+def template_to_standard_fields(
+    template: list[dict[str, Any]],
+    inspection_only: bool = False,
+) -> dict[str, str]:
     fields: dict[str, str] = {}
     for index, item in enumerate(template, start=1):
         if item.get("is_deleted"):
+            continue
+        if inspection_only and not include_in_inspection(item):
             continue
         name = clean_text(item.get("field_key", "")) or clean_text(item.get("display_name_zh", "")) or f"unknown_{index}"
         value = clean_text(item.get("standard_value", ""))
@@ -627,7 +810,7 @@ def match_label_to_template(
     debug: dict[str, Any] = {}
 
     for item in template:
-        if item.get("is_deleted"):
+        if item.get("is_deleted") or not include_in_inspection(item):
             continue
         field_key = clean_text(item.get("field_key", "")) or clean_text(item.get("display_name_zh", ""))
         if not field_key:
@@ -708,6 +891,13 @@ def match_label_to_template(
                 value = fallback_find_value_in_text(label_raw_text, item, definition)
                 reason = "文本兜底匹配" if value else "标签中未定位字段锚点"
                 confidence = 0.52 if value else 0.0
+        if definition.get("field_id") == "manufacturer_name" and is_country_value(value):
+            value = ""
+            candidates = []
+            reason = "标签值 CHINA/中国 更像是产地，不应匹配生产者名称。标签中未定位到生产者名称字段。"
+            confidence = 0.0
+        elif definition.get("field_id") == "manufacturer_name" and not value:
+            reason = "标签中未定位到生产者名称字段"
 
         if value:
             label_fields[field_key] = value
@@ -801,6 +991,11 @@ def fallback_find_value_in_text(raw_text: str, item: dict[str, Any], definition:
     return ""
 
 
+def is_country_value(value: Any) -> bool:
+    normalized = normalize_key(value)
+    return normalized in {normalize_key(item) for item in COUNTRY_VALUES}
+
+
 def find_standard_value_in_text(raw_text: str, item: dict[str, Any], definition: dict[str, Any]) -> str:
     standard_value = clean_text(item.get("standard_value", ""))
     if not standard_value:
@@ -838,6 +1033,7 @@ def normalize_template_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         field_key = clean_text(row.get("字段 key") or row.get("field_key") or row.get("field_id"))
         is_deleted_value = row.get("是否忽略该字段", row.get("is_deleted", False))
         is_deleted = bool(is_deleted_value) if not isinstance(is_deleted_value, str) else is_deleted_value in {"是", "true", "True", "1"}
+        include_value = row.get("是否参与检测", row.get("include_in_inspection", None))
         if not display_name and not source_name and not standard_value:
             continue
         matched = match_field_definition(source_name) or {}
@@ -858,6 +1054,7 @@ def normalize_template_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "note": clean_text(row.get("备注") or row.get("note")),
                 "source": clean_text(row.get("source")) or ("manual" if clean_text(row.get("映射状态") or row.get("mapping_status")) == "MANUAL_CONFIRMED" else "drawing"),
                 "is_deleted": is_deleted,
+                "include_in_inspection": include_value,
         }
         mapped_item = apply_field_mapping(base_item, unknown_index=index)
         if field_key:
@@ -870,5 +1067,8 @@ def normalize_template_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             mapped_item["needs_review"] = False
         mapped_item["note"] = base_item["note"]
         mapped_item["is_deleted"] = is_deleted
+        mapped_item["include_in_inspection"] = include_in_inspection(mapped_item)
+        if not mapped_item["include_in_inspection"]:
+            mapped_item["inspection_note"] = "字段属于图纸管理信息，默认不参与现场检测。"
         template.append(mapped_item)
     return template

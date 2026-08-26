@@ -20,11 +20,19 @@ FIELD_KEY_COMPARE_ALIASES = {
     "capacity": "额定容量",
     "made_in": "制造地",
     "brand_name": "品牌",
+    "manufacturer_name": "生产者名称",
     "standard_reference_no": "依据国家标准",
     "registration_no": "注册号",
+    "cleaning_ratio": "洗净比",
+    "wash_spin_capacity": "洗涤/脱水容量",
+    "wash_capacity": "洗涤容量",
+    "spin_capacity": "脱水容量",
+    "drawing_code": "编码",
+    "label_code": "编码",
+    "label_name": "标签名称",
 }
 
-UNIT_OPTIONAL_FIELDS = {"年耗电量", "年耗水量", "容量", "额定容量", "annual_energy_consumption", "annual_water_consumption", "capacity"}
+UNIT_OPTIONAL_FIELDS = {"年耗电量", "年耗水量", "容量", "额定容量", "annual_energy_consumption", "annual_water_consumption", "capacity", "wash_capacity", "spin_capacity", "wash_spin_capacity"}
 CODE_LIKE_FIELDS = {"产品型号", "规格型号", "型号", "model_number", "standard_reference_no", "registration_no", "版本号", "序列号"}
 UNIT_NORMALIZATION = (
     (r"千瓦时|ＫＷＨ|KWH/YEAR|KWH", "KWH"),
@@ -178,7 +186,7 @@ def compare_single_field(
     elif not label_value:
         status = "label_missing"
         result = "NEED_REVIEW"
-        reason = "标签字段缺失或OCR未定位，需要人工确认。"
+        reason = clean_text((label_debug or {}).get("select_reason", "")) or "标签字段缺失或OCR未定位，需要人工确认。"
         confidence = 0.0
     elif values_match:
         if 0 < field_confidence < 0.45:

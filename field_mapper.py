@@ -62,6 +62,21 @@ FIELD_MAP: dict[str, dict[str, Any]] = {
             "العلامة التجارية",
         ),
     },
+    "manufacturer_name": {
+        "display_name_zh": "生产者名称",
+        "aliases": (
+            "生产者名称",
+            "生产者",
+            "制造商",
+            "制造商名称",
+            "生产企业",
+            "MANUFACTURER",
+            "MANUFACTURER NAME",
+            "PRODUCER",
+            "PRODUCER NAME",
+            "COMPANY NAME",
+        ),
+    },
     "made_in": {
         "display_name_zh": "产地",
         "aliases": (
@@ -97,6 +112,33 @@ FIELD_MAP: dict[str, dict[str, Any]] = {
             "CONSOMMATION D'EAU",
             "استهلاك المياه السنوي",
         ),
+    },
+    "cleaning_ratio": {
+        "display_name_zh": "洗净比",
+        "aliases": (
+            "洗净比",
+            "洗涤比",
+            "WASH RATIO",
+            "CLEANING RATIO",
+        ),
+    },
+    "wash_spin_capacity": {
+        "display_name_zh": "洗涤/脱水容量",
+        "aliases": (
+            "洗涤/脱水容量",
+            "洗涤脱水容量",
+            "洗涤/脱水容量(公斤)",
+            "WASH/SPIN CAPACITY",
+            "WASHING/SPINNING CAPACITY",
+        ),
+    },
+    "wash_capacity": {
+        "display_name_zh": "洗涤容量",
+        "aliases": ("洗涤容量", "WASH CAPACITY", "WASHING CAPACITY"),
+    },
+    "spin_capacity": {
+        "display_name_zh": "脱水容量",
+        "aliases": ("脱水容量", "SPIN CAPACITY", "SPINNING CAPACITY"),
     },
     "capacity": {
         "display_name_zh": "容量",
@@ -156,6 +198,18 @@ FIELD_MAP: dict[str, dict[str, Any]] = {
     "type": {
         "display_name_zh": "类型",
         "aliases": ("TYPE",),
+    },
+    "drawing_code": {
+        "display_name_zh": "图纸编号",
+        "aliases": ("图纸编号", "图纸编码", "DRAWING CODE", "DRAWING NO", "DWG NO", "DWG"),
+    },
+    "label_code": {
+        "display_name_zh": "编码",
+        "aliases": ("编码", "标签编码", "LABEL CODE", "CODE", "PART NO"),
+    },
+    "label_name": {
+        "display_name_zh": "标签名称",
+        "aliases": ("标签名称", "LABEL NAME", "LABEL", "铭牌", "能效标签"),
     },
 }
 

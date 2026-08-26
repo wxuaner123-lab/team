@@ -15,6 +15,7 @@ import streamlit as st
 from comparison import compare_fields
 from drawing_parser import extract_drawing_content
 from dynamic_field_template import (
+    include_in_inspection,
     match_label_to_template,
     normalize_template_rows,
     standard_fields_to_template,
@@ -45,6 +46,7 @@ from product_store import (
     register_drawing_pdf,
     resolve_qr_match,
     resolve_project_path,
+    save_drawings,
     save_evidence_image,
     save_uploaded_drawing,
     set_current_drawing,
@@ -54,7 +56,7 @@ from product_store import (
     update_drawing_field_template,
     upsert_product,
 )
-from qr_parser import decode_qr_image
+from qr_parser import decode_qr_image, parse_qr_content
 
 
 DEFAULT_REAL_IMAGE_DIR = PROJECT_ROOT / "data" / "实物图" / "data 2"
@@ -71,18 +73,25 @@ def first_existing_path(*paths: Path) -> Path:
     return paths[0]
 
 
+def project_relative_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except Exception:
+        return str(path)
+
+
 DEMO_CASES = {
     "样例A：中文能效标签 - 正确标签": {
         "case_id": "demo_cn_pass",
         "pdf": first_existing_path(
+            DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "10022178 MINI2.0CC -JW30-77NBCCQDZW 能效标签2023.12.29.pdf",
             DEPLOYABLE_DEMO_DIR / "sample_001" / "drawing.pdf",
             BATCH_DEMO_DIR / "drawing.pdf",
-            DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "10022178 MINI2.0CC -JW30-77NBCCQDZW 能效标签2023.12.29.pdf",
         ),
         "label": first_existing_path(
+            DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "label 1.jpg",
             DEPLOYABLE_DEMO_DIR / "sample_001" / "label.png",
             BATCH_DEMO_DIR / "label_001_baseline.png",
-            DEFAULT_REAL_IMAGE_DIR / "Sample_001" / "label 1.jpg",
         ),
         "product_id": "DEMO-CN-ENERGY",
         "product_model": "JW30-77NBCCQDZW",
@@ -124,6 +133,364 @@ DEMO_CASES = {
         "demo_fail": False,
     },
 }
+
+DEMO_A_CASE_NAME = "样例A：中文能效标签 - 正确标签"
+DEMO_A_DRAWING_ID = "DEMO-CN-ENERGY-SAMPLE-A"
+DEMO_A_CORE_TEMPLATE = [
+    {
+        "field_id": "demo_a_model_number",
+        "field_key": "model_number",
+        "display_name_zh": "规格型号",
+        "source_field_name": "规格型号",
+        "source_language": "zh",
+        "standard_value": "JW30-77NBCCQDZW",
+        "unit": "",
+        "bbox": None,
+        "confidence": 0.98,
+        "value_type": "model",
+        "required": True,
+        "include_in_inspection": True,
+        "mapping_status": "CONFIRMED",
+        "needs_review": False,
+        "match_reason": "demo A confirmed seed 核心检测字段",
+    },
+    {
+        "field_id": "demo_a_energy_class",
+        "field_key": "energy_class",
+        "display_name_zh": "能效等级",
+        "source_field_name": "能效等级",
+        "source_language": "zh",
+        "standard_value": "2",
+        "unit": "",
+        "bbox": None,
+        "confidence": 0.98,
+        "value_type": "grade",
+        "required": True,
+        "include_in_inspection": True,
+        "mapping_status": "CONFIRMED",
+        "needs_review": False,
+        "match_reason": "demo A confirmed seed 核心检测字段",
+    },
+    {
+        "field_id": "demo_a_annual_energy_consumption",
+        "field_key": "annual_energy_consumption",
+        "display_name_zh": "年耗电量",
+        "source_field_name": "耗电量",
+        "source_language": "zh",
+        "standard_value": "0.363",
+        "unit": "",
+        "bbox": None,
+        "confidence": 0.98,
+        "value_type": "energy",
+        "required": True,
+        "include_in_inspection": True,
+        "mapping_status": "CONFIRMED",
+        "needs_review": False,
+        "match_reason": "demo A confirmed seed 核心检测字段",
+    },
+    {
+        "field_id": "demo_a_annual_water_consumption",
+        "field_key": "annual_water_consumption",
+        "display_name_zh": "年耗水量",
+        "source_field_name": "用水量",
+        "source_language": "zh",
+        "standard_value": "20",
+        "unit": "",
+        "bbox": None,
+        "confidence": 0.98,
+        "value_type": "water",
+        "required": True,
+        "include_in_inspection": True,
+        "mapping_status": "CONFIRMED",
+        "needs_review": False,
+        "match_reason": "demo A confirmed seed 核心检测字段",
+    },
+    {
+        "field_id": "demo_a_cleaning_ratio",
+        "field_key": "cleaning_ratio",
+        "display_name_zh": "洗净比",
+        "source_field_name": "洗净比",
+        "source_language": "zh",
+        "standard_value": "1.03",
+        "unit": "",
+        "bbox": None,
+        "confidence": 0.98,
+        "value_type": "ratio",
+        "required": True,
+        "include_in_inspection": True,
+        "mapping_status": "CONFIRMED",
+        "needs_review": False,
+        "match_reason": "demo A confirmed seed 核心检测字段",
+    },
+    {
+        "field_id": "demo_a_wash_spin_capacity",
+        "field_key": "wash_spin_capacity",
+        "display_name_zh": "洗涤/脱水容量",
+        "source_field_name": "洗涤/脱水容量",
+        "source_language": "zh",
+        "standard_value": "3.0/3.0",
+        "unit": "",
+        "bbox": None,
+        "confidence": 0.98,
+        "value_type": "capacity_pair",
+        "required": True,
+        "include_in_inspection": True,
+        "mapping_status": "CONFIRMED",
+        "needs_review": False,
+        "match_reason": "demo A confirmed seed 核心检测字段",
+    },
+    {
+        "field_id": "demo_a_standard_reference_no",
+        "field_key": "standard_reference_no",
+        "display_name_zh": "依据国家标准",
+        "source_field_name": "依据国家标准",
+        "source_language": "zh",
+        "standard_value": "GB 12021.4-2013",
+        "unit": "",
+        "bbox": None,
+        "confidence": 0.98,
+        "value_type": "standard",
+        "required": True,
+        "include_in_inspection": True,
+        "mapping_status": "CONFIRMED",
+        "needs_review": False,
+        "match_reason": "demo A confirmed seed 核心检测字段",
+    },
+    {
+        "field_id": "demo_a_manufacturer_name",
+        "field_key": "manufacturer_name",
+        "display_name_zh": "生产者名称",
+        "source_field_name": "生产者名称",
+        "source_language": "zh",
+        "standard_value": "上海小吉互联网科技有限公司",
+        "unit": "",
+        "bbox": None,
+        "confidence": 0.90,
+        "value_type": "manufacturer",
+        "required": False,
+        "include_in_inspection": True,
+        "mapping_status": "CONFIRMED",
+        "needs_review": False,
+        "match_reason": "demo A confirmed seed 核心检测字段；允许现场识别进入人工确认",
+    },
+]
+
+
+def demo_case_a() -> dict[str, Any]:
+    return DEMO_CASES[DEMO_A_CASE_NAME]
+
+
+def demo_drawing_for_case(case: dict[str, Any]) -> dict[str, Any] | None:
+    case_pdf = project_relative_path(case["pdf"])
+    use_demo_a_drawing = case.get("case_id") in {"demo_cn_pass", "demo_cn_fail"}
+    for drawing in load_drawings():
+        if use_demo_a_drawing and drawing.get("drawing_id") == DEMO_A_DRAWING_ID:
+            return drawing
+        if clean_text(drawing.get("pdf_path", "")) == case_pdf and clean_text(drawing.get("product_id", "")) == case.get("product_id", ""):
+            return drawing
+    return None
+
+
+def demo_a_template_has_core_fields(template: list[dict[str, Any]]) -> bool:
+    required_keys = {
+        "model_number",
+        "energy_class",
+        "annual_energy_consumption",
+        "annual_water_consumption",
+        "cleaning_ratio",
+        "wash_spin_capacity",
+        "standard_reference_no",
+    }
+    included_keys = {
+        clean_text(item.get("field_key", ""))
+        for item in template
+        if not item.get("is_deleted") and include_in_inspection(item)
+    }
+    return required_keys.issubset(included_keys)
+
+
+def demo_a_confirmed_template() -> list[dict[str, Any]]:
+    return [dict(item) for item in DEMO_A_CORE_TEMPLATE]
+
+
+def regression_cases() -> list[dict[str, Any]]:
+    demo_a = demo_case_a()
+    demo_b = DEMO_CASES["样例B：中文能效标签 - 演示错误字段"]
+    demo_c = DEMO_CASES["样例C：阿拉伯语/英语标签 - 多语言字段"]
+    return [
+        {
+            "case_id": "cn_pass",
+            "case_name": "中文能效标签正确样例",
+            "case_type": "cn_pass",
+            "product_id": demo_a.get("product_id", ""),
+            "drawing_id": DEMO_A_DRAWING_ID,
+            "pdf_path": demo_a["pdf"],
+            "label_path": demo_a["label"],
+            "expected_min_pass": 6,
+            "expected_max_fail": 0,
+            "expected_allow_need_review": True,
+            "expected_notes": "核心字段大部分 PASS，生产者名称允许 NEED_REVIEW。",
+            "demo_case": demo_a,
+        },
+        {
+            "case_id": "cn_fail_demo",
+            "case_name": "中文能效标签演示错误样例",
+            "case_type": "cn_fail",
+            "product_id": demo_b.get("product_id", ""),
+            "drawing_id": DEMO_A_DRAWING_ID,
+            "pdf_path": demo_b["pdf"],
+            "label_path": demo_b["label"],
+            "expected_min_pass": 1,
+            "expected_min_fail": 1,
+            "expected_max_fail": 99,
+            "expected_allow_need_review": True,
+            "expected_notes": "demo case：结果层注入一个错误字段用于展示 FAIL，不写入真实检测逻辑。",
+            "demo_case": demo_b,
+        },
+        {
+            "case_id": "multilingual",
+            "case_name": "阿拉伯语/英语多语言标签样例",
+            "case_type": "multilingual",
+            "product_id": demo_c.get("product_id", ""),
+            "drawing_id": "DEMO-AR-EN-ENERGY",
+            "pdf_path": demo_c["pdf"],
+            "label_path": demo_c["label"],
+            "expected_min_pass": 0,
+            "expected_max_fail": 99,
+            "expected_allow_need_review": True,
+            "expected_notes": "允许 NEED_REVIEW，但应能显示中文字段名且不崩溃。",
+            "demo_case": demo_c,
+        },
+        {
+            "case_id": "bad_image",
+            "case_name": "图片质量风险样例",
+            "case_type": "bad_image",
+            "product_id": demo_a.get("product_id", ""),
+            "drawing_id": DEMO_A_DRAWING_ID,
+            "pdf_path": demo_a["pdf"],
+            "label_path": demo_b["label"],
+            "expected_min_pass": 0,
+            "expected_max_fail": 99,
+            "expected_quality_risk": True,
+            "expected_allow_need_review": True,
+            "expected_notes": "图片质量为 WARNING/FAIL 时，只影响最终建议，不直接判标签字段错误。",
+            "demo_case": demo_a,
+        },
+        {
+            "case_id": "qr_url",
+            "case_name": "URL 二维码样例",
+            "case_type": "qr_url",
+            "product_id": "",
+            "drawing_id": "",
+            "pdf_path": "",
+            "label_path": "",
+            "expected_min_pass": 0,
+            "expected_max_fail": 0,
+            "expected_allow_need_review": True,
+            "expected_notes": "URL 应识别为 label_url_qr，不作为产品ID匹配图纸。",
+            "qr_text": "https://example.com/energy-label?id=123",
+        },
+        {
+            "case_id": "template_unconfirmed",
+            "case_name": "模板未确认样例",
+            "case_type": "template_unconfirmed",
+            "product_id": demo_a.get("product_id", ""),
+            "drawing_id": "DEMO-UNCONFIRMED",
+            "pdf_path": demo_a["pdf"],
+            "label_path": demo_a["label"],
+            "expected_min_pass": 0,
+            "expected_max_fail": 0,
+            "expected_allow_need_review": True,
+            "expected_notes": "模板未确认只影响最终建议，不直接当成字段检测失败。",
+        },
+    ]
+
+
+def ensure_demo_a_confirmed_template() -> dict[str, Any] | None:
+    case = demo_case_a()
+    if not case["pdf"].exists():
+        return None
+
+    drawings = load_drawings()
+    case_pdf = project_relative_path(case["pdf"])
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    target_index = next(
+        (
+            index
+            for index, drawing in enumerate(drawings)
+            if drawing.get("drawing_id") == DEMO_A_DRAWING_ID
+            or (
+                clean_text(drawing.get("pdf_path", "")) == case_pdf
+                and clean_text(drawing.get("product_id", "")) == case.get("product_id", "")
+            )
+        ),
+        None,
+    )
+
+    if target_index is not None:
+        drawing = dict(drawings[target_index])
+        if (
+            drawing.get("template_status") == "confirmed"
+            and is_valid_field_template(drawing.get("field_template", []))
+            and demo_a_template_has_core_fields(drawing.get("field_template", []))
+            and clean_text(drawing.get("template_confirmed_by", ""))
+        ):
+            return drawing
+        content = {}
+        if not is_valid_field_template(drawing.get("field_template", [])):
+            content = extract_drawing_content(case["pdf"])
+            drawing["drawing_ocr_text"] = content.get("raw_text", "")
+            drawing["parse_mode"] = content.get("parse_mode", "")
+            drawing["warnings"] = content.get("warnings", [])
+        drawing["field_template"] = demo_a_confirmed_template()
+        drawing["standard_fields"] = template_to_standard_fields(drawing["field_template"])
+        drawing["drawing_id"] = drawing.get("drawing_id") or DEMO_A_DRAWING_ID
+        drawing["product_id"] = case.get("product_id", "")
+        drawing["product_model"] = case.get("product_model", "")
+        drawing["template_status"] = "confirmed"
+        drawing["template_confirmed_at"] = now
+        drawing["template_confirmed_by"] = "demo_seed"
+        drawing["template_version"] = "v2"
+        drawing["template_updated_at"] = now
+        drawing["template_updated_by"] = "demo_seed"
+        drawing["pdf_path"] = case_pdf
+        drawing["pdf_name"] = case["pdf"].name
+        drawing["is_demo_seed"] = True
+        drawings[target_index] = drawing
+        save_drawings(drawings)
+        return drawing
+
+    content = extract_drawing_content(case["pdf"])
+    field_template = demo_a_confirmed_template()
+    drawing = {
+        "drawing_id": DEMO_A_DRAWING_ID,
+        "product_id": case.get("product_id", ""),
+        "product_model": case.get("product_model", ""),
+        "pdf_path": case_pdf,
+        "pdf_name": case["pdf"].name,
+        "version": "DEMO-V1",
+        "qr_code": case.get("product_id", ""),
+        "upload_time": now,
+        "update_time": now,
+        "is_current": True,
+        "standard_fields": template_to_standard_fields(field_template),
+        "field_template": field_template,
+        "template_status": "confirmed",
+        "template_version": "v2",
+        "template_updated_at": now,
+        "template_updated_by": "demo_seed",
+        "template_confirmed_at": now,
+        "template_confirmed_by": "demo_seed",
+        "drawing_ocr_text": content.get("raw_text", ""),
+        "parse_mode": content.get("parse_mode", ""),
+        "page_count": content.get("page_count", ""),
+        "warnings": content.get("warnings", []),
+        "is_demo_seed": True,
+    }
+    drawings.append(drawing)
+    save_drawings(drawings)
+    return drawing
+
 
 
 st.set_page_config(
@@ -216,6 +583,7 @@ def comparison_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
         "中文字段名",
         "原始字段名",
         "field_key",
+        "是否参与检测",
         "图纸值",
         "标签值",
         "检测结果",
@@ -271,6 +639,7 @@ def enrich_comparison_rows_with_template(
                 **row,
                 "中文字段名": display_name,
                 "field_key": clean_text(item.get("field_key", "")) or row_key,
+                "是否参与检测": "参与检测" if include_in_inspection(item) else "不参与检测",
                 "原始字段名": item.get("source_field_name", ""),
                 "语言": item.get("source_language", ""),
                 "映射状态": mapping_status,
@@ -290,7 +659,11 @@ def enrich_comparison_rows_with_template(
             enriched[-1]["异常说明"] = f"{enriched[-1].get('异常说明', '')} 图纸字段模板映射置信度偏低，建议后续人工确认模板。".strip()
         elif template_risk:
             enriched[-1]["检测结果"] = "NEED_REVIEW"
-            enriched[-1]["异常说明"] = "图纸字段模板或字段语义映射置信度低，需要人工确认。"
+            current_reason = clean_text(enriched[-1].get("异常说明", ""))
+            if current_reason and current_reason not in {"图纸标准值与标签识别值明确不一致。"}:
+                enriched[-1]["异常说明"] = f"{current_reason} 图纸字段模板或字段语义映射置信度低，建议人工确认模板。"
+            else:
+                enriched[-1]["异常说明"] = "图纸字段模板或字段语义映射置信度低，需要人工确认。"
     return enriched
 
 
@@ -324,6 +697,36 @@ def is_valid_field_template(template: list[dict[str, Any]] | None) -> bool:
     )
 
 
+def inspection_field_template(template: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not isinstance(template, list):
+        return []
+    return [
+        item
+        for item in template
+        if isinstance(item, dict) and not item.get("is_deleted") and include_in_inspection(item)
+    ]
+
+
+def template_status_text(status: str) -> str:
+    return template_status_label(status or "unconfirmed")
+
+
+def final_recommendation(field_result: str, template_status: str = "", quality_status: str = "") -> str:
+    if quality_status == "FAIL":
+        return "图片质量风险，建议重拍。"
+    if field_result == "FAIL":
+        return "存在异常字段，请复核。"
+    if field_result in {"SYSTEM_NOT_READY", "OCR_EMPTY", "IMAGE_QUALITY_FAIL"}:
+        return "系统链路未就绪，请先处理页面提示。"
+    if template_status and template_status != "confirmed":
+        if field_result == "PASS":
+            return "字段比对通过，但模板尚未确认，结果仅供参考。"
+        return "存在需确认字段，且模板尚未确认，建议人工确认模板后使用。"
+    if field_result == "NEED_REVIEW":
+        return "存在需人工确认字段，请复核后使用。"
+    return "字段比对通过，可参考。"
+
+
 def system_issue_row(result: str, reason: str, field_name: str = "系统状态") -> dict[str, Any]:
     return {
         "字段名称": field_name,
@@ -349,15 +752,24 @@ def result_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def render_result_overview(result: str, rows: list[dict[str, Any]], elapsed_seconds: float) -> None:
+def render_result_overview(
+    result: str,
+    rows: list[dict[str, Any]],
+    elapsed_seconds: float,
+    template_status: str = "",
+    quality_status: str = "",
+) -> None:
     counts = result_counts(rows)
-    result_badge(result)
-    cols = st.columns(5)
-    cols[0].metric("检测字段数", counts["total"])
-    cols[1].metric("通过字段数", counts["pass"])
-    cols[2].metric("异常字段数", counts["fail"])
-    cols[3].metric("需确认字段数", counts["review"])
-    cols[4].metric("检测耗时", f"{elapsed_seconds:.1f}s")
+    cols = st.columns(3)
+    cols[0].metric("字段比对结论", result)
+    cols[1].metric("模板状态", template_status_text(template_status) if template_status else "演示模板")
+    cols[2].metric("最终建议", final_recommendation(result, template_status, quality_status))
+    detail_cols = st.columns(5)
+    detail_cols[0].metric("检测字段数", counts["total"])
+    detail_cols[1].metric("通过字段数", counts["pass"])
+    detail_cols[2].metric("异常字段数", counts["fail"])
+    detail_cols[3].metric("需确认字段数", counts["review"])
+    detail_cols[4].metric("检测耗时", f"{elapsed_seconds:.1f}s")
 
 
 def quality_status_text(status: str) -> str:
@@ -451,7 +863,7 @@ def quality_result_summary(quality: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def quality_dataframe(quality: dict[str, Any]) -> pd.DataFrame:
-    return pd.DataFrame(
+    dataframe = pd.DataFrame(
         [
             {"检查项": "清晰度", "状态": quality.get("blur_status", ""), "评分/数值": quality.get("blur_score", ""), "建议": quality.get("blur_message", "")},
             {"检查项": "亮度", "状态": quality.get("brightness_status", ""), "评分/数值": quality.get("brightness_score", ""), "建议": quality.get("brightness_message", "")},
@@ -460,6 +872,8 @@ def quality_dataframe(quality: dict[str, Any]) -> pd.DataFrame:
             {"检查项": "标签占比", "状态": quality.get("label_area_status", ""), "评分/数值": quality.get("label_area_score", ""), "建议": quality.get("label_area_message", "")},
         ]
     )
+    dataframe["评分/数值"] = dataframe["评分/数值"].astype(str)
+    return dataframe
 
 
 def render_quality_gate(quality: dict[str, Any], key_prefix: str = "quality_gate") -> bool:
@@ -513,7 +927,7 @@ def demo_result_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
             "异常说明": "原因",
         }
     )
-    visible_columns = ["中文字段名", "原始字段名", "图纸标准值", "标签识别值", "状态", "原因"]
+    visible_columns = ["中文字段名", "原始字段名", "是否参与检测", "图纸标准值", "标签识别值", "状态", "原因"]
     for column in visible_columns:
         if column not in dataframe.columns:
             dataframe[column] = ""
@@ -883,10 +1297,12 @@ def load_product_drawing_fields(
 ) -> tuple[dict[str, str], list[str]]:
     if drawing:
         template = drawing_field_template(drawing)
-        if template:
-            return template_to_standard_fields(template), [
+        inspection_template = inspection_field_template(template)
+        if inspection_template:
+            return template_to_standard_fields(inspection_template, inspection_only=True), [
                 f"已加载图纸动态字段模板：{drawing.get('pdf_name', '')}",
                 f"图纸版本：{drawing.get('version', '-')}",
+                f"本次参与检测字段数：{len(inspection_template)}",
             ]
         warnings = [
             f"已匹配图纸库：{drawing.get('pdf_name', '')}",
@@ -903,8 +1319,10 @@ def load_product_drawing_fields(
                 warnings.extend(list(drawing_content.get("warnings", [])))
                 warnings.append(f"图纸解析模式：{drawing_content.get('parse_mode', '-')}")
                 parsed_template = drawing_content.get("field_template", [])
-                if parsed_template:
-                    return template_to_standard_fields(parsed_template), warnings
+                parsed_inspection_template = inspection_field_template(parsed_template)
+                if parsed_inspection_template:
+                    warnings.append(f"本次参与检测字段数：{len(parsed_inspection_template)}")
+                    return template_to_standard_fields(parsed_inspection_template, inspection_only=True), warnings
                 return {}, warnings
             except Exception as error:
                 return {}, [*warnings, f"图纸解析失败：{error}"]
@@ -936,11 +1354,13 @@ def render_standard_snapshot(
         st.warning("该图纸字段模板为空或需要人工确认。请先在图纸库重新生成模板或后续进入字段模板编辑。")
     else:
         template = drawing_field_template(drawing)
+        inspection_template = inspection_field_template(template)
         snapshot_rows = (
             [
                 {
                     "中文字段名": item.get("display_name_zh", ""),
                     "原始字段名": item.get("source_field_name", ""),
+                    "是否参与检测": "参与检测",
                     "语言": item.get("source_language", ""),
                     "标准值": item.get("standard_value", ""),
                     "单位": item.get("unit", ""),
@@ -948,12 +1368,12 @@ def render_standard_snapshot(
                     "映射置信度": item.get("mapping_confidence", ""),
                     "置信度": item.get("confidence", ""),
                 }
-                for item in template
+                for item in inspection_template
                 if clean_text(item.get("standard_value", ""))
             ]
-            if template
+            if inspection_template
             else [
-                {"中文字段名": field_name, "原始字段名": field_name, "标准值": value}
+                {"中文字段名": field_name, "原始字段名": field_name, "是否参与检测": "参与检测", "标准值": value}
                 for field_name, value in standard_snapshot.items()
             ]
         )
@@ -962,6 +1382,13 @@ def render_standard_snapshot(
             width="stretch",
             hide_index=True,
         )
+        if template:
+            with st.expander("图纸全部字段"):
+                st.dataframe(
+                    field_template_dataframe(template),
+                    width="stretch",
+                    hide_index=True,
+                )
     render_field_source_debug(product, drawing, standard_snapshot)
     render_multilingual_mapping_debug(drawing)
     return standard_snapshot
@@ -1164,9 +1591,16 @@ def run_demo_detection(
         elapsed = time.perf_counter() - started
         return build_demo_record(case, label_name, "SYSTEM_NOT_READY", comparison_rows, elapsed)
 
-    drawing_content = extract_drawing_content(case["pdf"])
-    template = drawing_content.get("field_template", [])
-    standard_snapshot = template_to_standard_fields(template)
+    demo_drawing = ensure_demo_a_confirmed_template() if case.get("case_id") == "demo_cn_pass" else demo_drawing_for_case(case)
+    drawing_content = extract_drawing_content(case["pdf"]) if not demo_drawing else {
+        "field_template": demo_drawing.get("field_template", []),
+        "raw_text": demo_drawing.get("drawing_ocr_text", ""),
+        "parse_mode": demo_drawing.get("parse_mode", ""),
+        "warnings": demo_drawing.get("warnings", []),
+    }
+    template = demo_drawing.get("field_template", []) if demo_drawing else drawing_content.get("field_template", [])
+    inspection_template = inspection_field_template(template)
+    standard_snapshot = template_to_standard_fields(inspection_template, inspection_only=True)
     quality = evaluate_label_image(label_bytes)
     if not is_valid_field_template(template) or not standard_snapshot:
         comparison_rows = [
@@ -1221,9 +1655,9 @@ def run_demo_detection(
         )
         return record
 
-    if template:
+    if inspection_template:
         label_fields_for_compare, dynamic_debug = match_label_to_template(
-            template,
+            inspection_template,
             label_result.get("raw_text", ""),
             label_result.get("ocr_rows", []),
         )
@@ -1238,13 +1672,13 @@ def run_demo_detection(
     else:
         label_fields_for_compare = {}
 
-    if template and standard_snapshot:
+    if inspection_template and standard_snapshot:
         comparison_rows, overall_result = compare_fields(
             standard_snapshot,
             label_fields_for_compare,
             label_result.get("field_match_debug", {}),
         )
-        comparison_rows = enrich_comparison_rows_with_template(comparison_rows, template)
+        comparison_rows = enrich_comparison_rows_with_template(comparison_rows, inspection_template)
         if case.get("demo_fail"):
             comparison_rows = apply_demo_fail_override(comparison_rows)
         overall_result = overall_from_rows(comparison_rows)
@@ -1274,8 +1708,13 @@ def run_demo_detection(
         "inspection_id": f"DEMO-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
         "product_id": case.get("product_id", ""),
         "product_model": case.get("product_model", ""),
+        "drawing_id": demo_drawing.get("drawing_id", "demo_drawing") if demo_drawing else "demo_drawing",
         "drawing_pdf": str(case["pdf"]),
         "drawing_name": case["pdf"].name,
+        "template_status": demo_drawing.get("template_status", "") if demo_drawing else "",
+        "template_version": demo_drawing.get("template_version", "") if demo_drawing else "",
+        "template_confirmed_at": demo_drawing.get("template_confirmed_at", "") if demo_drawing else "",
+        "template_confirmed_by": demo_drawing.get("template_confirmed_by", "") if demo_drawing else "",
         "label_image_name": label_name,
         "result": overall_result,
         "fail_fields": fail_fields,
@@ -1289,12 +1728,17 @@ def run_demo_detection(
         "label_result": label_result,
         "label_quality": quality,
         "quality_result": quality_result_summary(quality),
+        "final_recommendation": final_recommendation(
+            overall_result,
+            demo_drawing.get("template_status", "") if demo_drawing else "",
+            quality_result_summary(quality).get("quality_status", ""),
+        ),
         "qr_result": {
             "raw_text": f"PID={case.get('product_id', '')};MODEL={case.get('product_model', '')};BATCH=DEMO",
             "qr_type": "product_qr",
             "match_status": "matched_drawing",
             "matched_product_id": case.get("product_id", ""),
-            "matched_drawing_id": "demo_drawing",
+            "matched_drawing_id": demo_drawing.get("drawing_id", "demo_drawing") if demo_drawing else "demo_drawing",
             "match_reason": "演示模式使用内置样例图纸与标签。",
             "is_manual_binding": False,
         },
@@ -1361,7 +1805,8 @@ def render_inspection_page() -> None:
 
     standard_snapshot = render_standard_snapshot(product, drawing)
     template = drawing_field_template(drawing)
-    template_ready = bool(standard_snapshot) and is_valid_field_template(template)
+    inspection_template = inspection_field_template(template)
+    template_ready = bool(standard_snapshot) and is_valid_field_template(inspection_template)
     if not template_ready:
         st.warning("当前没有加载到有效图纸字段模板，请先进入字段模板确认页面，或在图纸库重新上传/解析图纸。")
     image_bytes, filename, quality_result, quality_can_continue = get_label_image_bytes()
@@ -1376,9 +1821,9 @@ def render_inspection_page() -> None:
                 debug_output_dir=PROJECT_ROOT / "debug_output" / "quality_terminal",
                 file_stem=f"{product.get('product_id', 'product')}_{datetime.now().strftime('%H%M%S')}",
             )
-            if template:
+            if inspection_template:
                 label_fields_for_compare, dynamic_debug = match_label_to_template(
-                    template,
+                    inspection_template,
                     label_result.get("raw_text", ""),
                     label_result.get("ocr_rows", []),
                 )
@@ -1401,13 +1846,13 @@ def render_inspection_page() -> None:
                     )
                 ]
                 overall_result = "OCR_EMPTY"
-            elif template and standard_snapshot:
+            elif inspection_template and standard_snapshot:
                 comparison_rows, overall_result = compare_fields(
                     standard_snapshot,
                     label_fields_for_compare,
                     label_result.get("field_match_debug", {}),
                 )
-                comparison_rows = enrich_comparison_rows_with_template(comparison_rows, template)
+                comparison_rows = enrich_comparison_rows_with_template(comparison_rows, inspection_template)
                 overall_result = overall_from_rows(comparison_rows)
             else:
                 comparison_rows = [
@@ -1419,30 +1864,44 @@ def render_inspection_page() -> None:
                 ]
                 overall_result = "SYSTEM_NOT_READY"
             inspection_id = datetime.now().strftime("QT-%Y%m%d-%H%M%S-%f")
-            evidence_path = save_evidence_image(
-                image_bytes,
-                inspection_id,
-                filename,
-            )
-            record = build_inspection_record(
-                product=product,
-                drawing=drawing,
-                qr_payload=qr_payload,
-                standard_snapshot=standard_snapshot,
-                label_result=label_result,
-                comparison_rows=comparison_rows,
-                overall_result=overall_result,
-                evidence_path=evidence_path,
-                qr_match=qr_match,
-            )
-            record["quality_result"] = quality_result_summary(quality_result)
-            record["inspection_id"] = inspection_id
-            saved_record = append_quality_record(record)
-            st.session_state.last_inspection = saved_record
+            try:
+                evidence_path = save_evidence_image(
+                    image_bytes,
+                    inspection_id,
+                    filename,
+                )
+                record = build_inspection_record(
+                    product=product,
+                    drawing=drawing,
+                    qr_payload=qr_payload,
+                    standard_snapshot=standard_snapshot,
+                    label_result=label_result,
+                    comparison_rows=comparison_rows,
+                    overall_result=overall_result,
+                    evidence_path=evidence_path,
+                    qr_match=qr_match,
+                )
+                record["quality_result"] = quality_result_summary(quality_result)
+                record["inspection_id"] = inspection_id
+                record["final_recommendation"] = final_recommendation(
+                    overall_result,
+                    record.get("template_status", ""),
+                    record["quality_result"].get("quality_status", ""),
+                )
+                saved_record = append_quality_record(record)
+                st.session_state.last_inspection = saved_record
+            except Exception as error:
+                st.error(f"检测记录保存失败：{error}")
 
     if st.session_state.last_inspection:
         record = st.session_state.last_inspection
-        result_badge(record["result"])
+        render_result_overview(
+            record["result"],
+            record["comparison_rows"],
+            float(record.get("elapsed_seconds", 0) or 0),
+            record.get("template_status", ""),
+            (record.get("quality_result") or {}).get("quality_status", ""),
+        )
         render_quality_result_notice(record.get("quality_result"))
         render_record_template_risk(record)
         if record["fail_fields"]:
@@ -1583,6 +2042,8 @@ def render_demo_mode_page() -> None:
         record["result"],
         record["comparison_rows"],
         float(record.get("elapsed_seconds", 0) or 0),
+        record.get("template_status", ""),
+        (record.get("quality_result") or {}).get("quality_status", ""),
     )
     quality = record.get("quality_result") or quality_result_summary(record.get("label_quality", {}))
     quality_cols = st.columns(3)
@@ -1611,29 +2072,40 @@ def render_demo_mode_page() -> None:
         width="stretch",
     )
     if action_cols[1].button("保存为演示检测记录", width="stretch"):
-        saved = append_quality_record(
-            {
-                **record,
-                "operator": st.session_state.operator_name,
-                "workstation": st.session_state.workstation,
-                "drawing_id": "demo",
-                "drawing_version": "",
-                "drawing_qr_code": "",
-                "sn": "",
-                "batch_no": "",
-                "qr_payload": {},
-                "label_fields": record.get("label_result", {}).get("fields", {}),
-                "ocr_confidence": record.get("label_result", {}).get("confidence", 0),
-                "ocr_text": record.get("label_result", {}).get("raw_text", ""),
-                "ocr_rows": record.get("label_result", {}).get("ocr_rows", []),
-                "ocr_warnings": record.get("label_result", {}).get("warnings", []),
-                "field_match_debug": record.get("label_result", {}).get("field_match_debug", {}),
-                "selected_preprocess": record.get("label_result", {}).get("selected_preprocess", ""),
-                "quality_result": record.get("quality_result", {}),
-                "evidence_image": "",
-            }
-        )
-        st.success(f"已保存演示检测记录：{saved.get('inspection_id', record['inspection_id'])}")
+        try:
+            saved = append_quality_record(
+                {
+                    **record,
+                    "operator": st.session_state.operator_name,
+                    "operator_name": st.session_state.operator_name,
+                    "workstation": st.session_state.workstation,
+                    "drawing_id": record.get("drawing_id", "demo"),
+                    "drawing_version": "",
+                    "drawing_qr_code": "",
+                    "sn": "",
+                    "batch_no": "",
+                    "qr_payload": {},
+                    "label_fields": record.get("label_result", {}).get("fields", {}),
+                    "ocr_confidence": record.get("label_result", {}).get("confidence", 0),
+                    "ocr_text": record.get("label_result", {}).get("raw_text", ""),
+                    "ocr_rows": record.get("label_result", {}).get("ocr_rows", []),
+                    "ocr_warnings": record.get("label_result", {}).get("warnings", []),
+                    "field_match_debug": record.get("label_result", {}).get("field_match_debug", {}),
+                    "selected_preprocess": record.get("label_result", {}).get("selected_preprocess", ""),
+                    "quality_result": record.get("quality_result", {}),
+                    "field_results": record.get("comparison_rows", []),
+                    "final_result": record.get("result", ""),
+                    "final_recommendation": final_recommendation(
+                        record.get("result", ""),
+                        record.get("template_status", ""),
+                        (record.get("quality_result") or {}).get("quality_status", ""),
+                    ),
+                    "evidence_image": "",
+                }
+            )
+            st.success(f"已保存演示检测记录：{saved.get('inspection_id', record['inspection_id'])}")
+        except Exception as error:
+            st.error(f"演示检测记录保存失败：{error}")
 
     with st.expander("详情：标签识别结果与字段匹配信息"):
         st.write("二维码解析与匹配信息")
@@ -1677,8 +2149,11 @@ def render_demo_version_notice() -> None:
 
 
 def acceptance_items() -> list[dict[str, str]]:
+    ensure_demo_a_confirmed_template()
     drawings = load_drawings()
     records = load_quality_records(limit=20)
+    demo_drawing = demo_drawing_for_case(demo_case_a())
+    last_record = records[0] if records else {}
     demo_assets_ready = all(case["pdf"].exists() and case["label"].exists() for case in DEMO_CASES.values())
     has_template = any(bool(drawing.get("field_template")) for drawing in drawings) or demo_assets_ready
     has_zh_display = demo_assets_ready or any(
@@ -1688,6 +2163,7 @@ def acceptance_items() -> list[dict[str, str]]:
     has_record_rows = any(bool(record.get("comparison_rows")) for record in records)
     has_quality_record = any(bool(record.get("quality_result")) for record in records)
     has_qr_record = any(bool(record.get("qr_result")) for record in records)
+    regression_ok, regression_note = real_sample_regression_gate_status()
     statuses_seen = {
         row.get("检测结果")
         for record in records
@@ -1808,6 +2284,24 @@ def acceptance_items() -> list[dict[str, str]]:
             "说明": "新检测记录会保存 qr_result；旧历史记录可能没有该字段。" if not has_qr_record else "检测记录中已存在 qr_result。",
             "核心项": "否",
         },
+        {
+            "验收项": "至少存在一个 confirmed 演示模板",
+            "状态": "是" if demo_drawing and demo_drawing.get("template_status") == "confirmed" else "否",
+            "说明": demo_drawing.get("drawing_id", "样例A尚未建立已确认demo模板") if demo_drawing else "样例A尚未建立已确认demo模板",
+            "核心项": "是",
+        },
+        {
+            "验收项": "实际运行态检测记录保存成功",
+            "状态": "是" if last_record and (last_record.get("field_results") or last_record.get("comparison_rows")) and last_record.get("quality_result") and last_record.get("qr_result") else "否",
+            "说明": last_record.get("detection_time") or last_record.get("created_at", "尚未找到包含质量、二维码和字段结果的检测记录"),
+            "核心项": "是",
+        },
+        {
+            "验收项": "真实样本回归测试是否通过",
+            "状态": "是" if regression_ok else "否",
+            "说明": regression_note if regression_ok else f"请先修复回归测试失败项，再进入现场试用。{regression_note}",
+            "核心项": "是",
+        },
     ]
 
 
@@ -1821,8 +2315,15 @@ def render_acceptance_page() -> None:
 
     core_items = [item for item in items if item["核心项"] == "是"]
     core_ok = all(item["状态"] == "是" for item in core_items)
+    trial_gate_ok = all(
+        item["状态"] == "是"
+        for item in items
+        if item["验收项"] in {"至少存在一个 confirmed 演示模板", "实际运行态检测记录保存成功", "真实样本回归测试是否通过"}
+    )
     if core_ok:
-        st.success("系统建议结论：当前版本具备基础拍照质量控制能力，可继续进行小范围现场试用，不建议直接替代人工全检。")
+        st.success("系统建议结论：当前版本可作为演示版和小范围现场试运行候选版本。")
+    elif not trial_gate_ok:
+        st.warning("系统建议结论：当前版本可演示，但不建议进入现场试运行，请先完成模板确认和记录保存验证。")
     else:
         st.warning("系统建议结论：建议先完善拍照质量控制和核心流程后再扩大试用范围。")
 
@@ -1910,21 +2411,48 @@ def demo_asset_rows() -> list[dict[str, Any]]:
 
 
 def data_chain_rows() -> list[dict[str, Any]]:
+    ensure_demo_a_confirmed_template()
     products = load_products()
     drawings = load_drawings()
     records = load_quality_records(limit=20)
+    demo_drawing = demo_drawing_for_case(demo_case_a())
     valid_templates = [
         drawing
         for drawing in drawings
         if is_valid_field_template(drawing.get("field_template", []))
     ]
+    confirmed_templates = [
+        drawing
+        for drawing in valid_templates
+        if drawing.get("template_status") == "confirmed"
+    ]
+    demo_confirmed_templates = [
+        drawing
+        for drawing in confirmed_templates
+        if drawing.get("drawing_id") == DEMO_A_DRAWING_ID or drawing.get("is_demo_seed")
+    ]
+    last_record = records[0] if records else {}
+    record_path = PROJECT_ROOT / "records" / "quality_terminal_records.jsonl"
     return [
         {"检查项": "产品主数据", "状态": "是" if products else "否", "说明": f"{len(products)} 条产品记录"},
         {"检查项": "图纸库记录", "状态": "是" if drawings else "否", "说明": f"{len(drawings)} 条图纸记录"},
         {"检查项": "有效字段模板", "状态": "是" if valid_templates else "否", "说明": f"{len(valid_templates)} 条可加载字段模板"},
+        {"检查项": "confirmed模板数量", "状态": "是" if confirmed_templates else "否", "说明": f"{len(confirmed_templates)} 条已确认模板"},
+        {"检查项": "demo confirmed模板数量", "状态": "是" if demo_confirmed_templates else "否", "说明": f"{len(demo_confirmed_templates)} 条demo已确认模板"},
+        {"检查项": "样例A使用confirmed模板", "状态": "是" if demo_drawing and demo_drawing.get("template_status") == "confirmed" else "否", "说明": demo_drawing.get("drawing_id", "未找到样例A图纸模板") if demo_drawing else "未找到样例A图纸模板"},
+        {"检查项": "records目录存在", "状态": "是" if (PROJECT_ROOT / "records").exists() else "否", "说明": relative_display_path(PROJECT_ROOT / "records")},
         {"检查项": "检测记录目录可写", "状态": "是" if directory_writable(PROJECT_ROOT / "records") else "否", "说明": relative_display_path(PROJECT_ROOT / "records")},
+        {"检查项": "evidence目录存在", "状态": "是" if (PROJECT_ROOT / "records" / "evidence").exists() else "否", "说明": relative_display_path(PROJECT_ROOT / "records" / "evidence")},
+        {"检查项": "evidence目录可写", "状态": "是" if directory_writable(PROJECT_ROOT / "records" / "evidence") else "否", "说明": relative_display_path(PROJECT_ROOT / "records" / "evidence")},
         {"检查项": "图纸库目录可写", "状态": "是" if directory_writable(PROJECT_ROOT / "master_data" / "drawings") else "否", "说明": relative_display_path(PROJECT_ROOT / "master_data" / "drawings")},
         {"检查项": "近期检测记录", "状态": "是" if records else "否", "说明": f"{len(records)} 条近期记录"},
+        {"检查项": "最近一次检测记录保存成功", "状态": "是" if last_record else "否", "说明": f"路径：{relative_display_path(record_path)}"},
+        {"检查项": "最近一次记录时间", "状态": "是" if last_record.get("detection_time") or last_record.get("created_at") else "否", "说明": last_record.get("detection_time") or last_record.get("created_at", "-")},
+        {"检查项": "最近记录包含quality_result", "状态": "是" if last_record.get("quality_result") else "否", "说明": "quality_result已保存" if last_record.get("quality_result") else "最近记录缺少quality_result"},
+        {"检查项": "最近记录包含qr_result", "状态": "是" if last_record.get("qr_result") else "否", "说明": "qr_result已保存" if last_record.get("qr_result") else "最近记录缺少qr_result"},
+        {"检查项": "最近记录包含template_status", "状态": "是" if last_record.get("template_status") else "否", "说明": last_record.get("template_status", "最近记录缺少template_status")},
+        {"检查项": "最近记录包含template_version", "状态": "是" if last_record.get("template_version") else "否", "说明": last_record.get("template_version", "最近记录缺少template_version")},
+        {"检查项": "最近记录包含field_results", "状态": "是" if last_record.get("field_results") or last_record.get("comparison_rows") else "否", "说明": "field_results已保存" if last_record.get("field_results") else ("comparison_rows已保存" if last_record.get("comparison_rows") else "最近记录缺少field_results")},
     ]
 
 
@@ -1960,6 +2488,277 @@ def run_demo_self_check(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_regression_case(case: dict[str, Any]) -> dict[str, Any]:
+    case_type = clean_text(case.get("case_type", ""))
+    base_row = {
+        "case_id": case.get("case_id", ""),
+        "case_name": case.get("case_name", ""),
+        "case_type": case_type,
+        "模板状态": "-",
+        "图片质量状态": "-",
+        "PASS数量": 0,
+        "FAIL数量": 0,
+        "NEED_REVIEW数量": 0,
+        "是否达标": "否",
+        "失败原因": "",
+        "备注": case.get("expected_notes", ""),
+    }
+
+    if case_type == "qr_url":
+        parsed = parse_qr_content(case.get("qr_text", ""))
+        ok = parsed.get("qr_type") == "label_url_qr"
+        base_row.update(
+            {
+                "是否达标": "是" if ok else "否",
+                "失败原因": "" if ok else f"二维码类型为 {parsed.get('qr_type')}",
+                "备注": f"{case.get('expected_notes', '')} 识别结果：{parsed.get('qr_type')}",
+            }
+        )
+        return base_row
+
+    if case_type == "template_unconfirmed":
+        advice = final_recommendation("PASS", "unconfirmed", "PASS")
+        ok = "仅供参考" in advice
+        base_row.update(
+            {
+                "模板状态": "unconfirmed",
+                "PASS数量": 1,
+                "是否达标": "是" if ok else "否",
+                "失败原因": "" if ok else f"最终建议未体现模板风险：{advice}",
+                "备注": f"{case.get('expected_notes', '')} 最终建议：{advice}",
+            }
+        )
+        return base_row
+
+    pdf_path = case.get("pdf_path")
+    label_path = case.get("label_path")
+    if not isinstance(pdf_path, Path) or not pdf_path.exists():
+        base_row["失败原因"] = f"样例文件缺失：{relative_display_path(pdf_path) if isinstance(pdf_path, Path) else pdf_path}"
+        return base_row
+    if not isinstance(label_path, Path) or not label_path.exists():
+        base_row["失败原因"] = f"样例文件缺失：{relative_display_path(label_path) if isinstance(label_path, Path) else label_path}"
+        return base_row
+
+    try:
+        record = run_demo_detection(case["demo_case"], label_path.read_bytes(), label_path.name)
+    except Exception as error:
+        base_row["失败原因"] = f"OCR或检测执行异常：{error}"
+        return base_row
+
+    if record.get("result") == "OCR_EMPTY":
+        base_row["失败原因"] = "OCR_EMPTY"
+        return base_row
+    if record.get("result") == "SYSTEM_NOT_READY":
+        base_row["失败原因"] = "TEMPLATE_NOT_LOADED"
+        return base_row
+
+    counts = result_counts(record.get("comparison_rows", []))
+    quality_status = clean_text((record.get("quality_result") or {}).get("quality_status", ""))
+    reasons: list[str] = []
+    expected_min_pass = int(case.get("expected_min_pass", 0) or 0)
+    expected_min_fail = int(case.get("expected_min_fail", 0) or 0)
+    expected_max_fail = int(case.get("expected_max_fail", 0) or 0)
+    if counts["pass"] < expected_min_pass:
+        reasons.append(f"PASS数量 {counts['pass']} 低于期望 {expected_min_pass}")
+    if counts["fail"] < expected_min_fail:
+        reasons.append(f"FAIL数量 {counts['fail']} 低于期望 {expected_min_fail}")
+    if counts["fail"] > expected_max_fail:
+        reasons.append(f"FAIL数量 {counts['fail']} 超过期望 {expected_max_fail}")
+    if case.get("expected_quality_risk") and quality_status not in {"WARNING", "FAIL"}:
+        reasons.append(f"图片质量状态为 {quality_status or '-'}，未触发风险提示")
+    if case_type == "multilingual":
+        zh_names = [
+            clean_text(row.get("中文字段名", ""))
+            for row in record.get("comparison_rows", [])
+            if clean_text(row.get("中文字段名", ""))
+        ]
+        if not zh_names:
+            reasons.append("多语言样例未显示中文字段名")
+    if case_type == "cn_pass":
+        producer_rows = [
+            row for row in record.get("comparison_rows", [])
+            if clean_text(row.get("field_key", "")) == "manufacturer_name"
+            or clean_text(row.get("中文字段名", "")) == "生产者名称"
+        ]
+        if any(clean_text(row.get("标签值", "")).upper() in {"CHINA", "中国"} for row in producer_rows):
+            reasons.append("生产者名称被错配为 CHINA/中国")
+
+    base_row.update(
+        {
+            "模板状态": record.get("template_status", "-") or "-",
+            "图片质量状态": quality_status or "-",
+            "PASS数量": counts["pass"],
+            "FAIL数量": counts["fail"],
+            "NEED_REVIEW数量": counts["review"],
+            "是否达标": "否" if reasons else "是",
+            "失败原因": "；".join(reasons),
+        }
+    )
+    return base_row
+
+
+def run_real_sample_regression_suite() -> list[dict[str, Any]]:
+    ensure_demo_a_confirmed_template()
+    return [run_regression_case(case) for case in regression_cases()]
+
+
+def real_sample_regression_gate_status() -> tuple[bool, str]:
+    cached_rows = st.session_state.get("last_real_sample_regression_rows", [])
+    cn_row = next((row for row in cached_rows if row.get("case_type") == "cn_pass"), None)
+    if cn_row:
+        return cn_row.get("是否达标") == "是", cn_row.get("失败原因") or "最近一次真实样本回归 cn_pass 已达标。"
+
+    cn_case = next((case for case in regression_cases() if case.get("case_type") == "cn_pass"), None)
+    if not cn_case:
+        return False, "未配置 cn_pass 回归样例。"
+    row = run_regression_case(cn_case)
+    ok = row.get("是否达标") == "是"
+    return ok, row.get("失败原因") or f"cn_pass：PASS {row.get('PASS数量')} / FAIL {row.get('FAIL数量')} / NEED_REVIEW {row.get('NEED_REVIEW数量')}"
+
+
+def regression_row(name: str, status: str, reason: str) -> dict[str, str]:
+    return {"检查项": name, "状态": status, "原因": reason}
+
+
+def core_regression_self_check() -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+
+    demo_assets = demo_asset_rows()
+    missing_assets = [
+        f"{row['样例']}：{row['图纸状态']}/{row['标签状态']}"
+        for row in demo_assets
+        if row["图纸状态"] != "存在" or row["标签状态"] != "存在"
+    ]
+    rows.append(
+        regression_row(
+            "demo数据是否存在",
+            "PASS" if not missing_assets else "FAIL",
+            "演示图纸和标签均存在。" if not missing_assets else "；".join(missing_assets),
+        )
+    )
+
+    drawings = load_drawings()
+    confirmed_templates = [
+        drawing
+        for drawing in drawings
+        if drawing.get("template_status") == "confirmed" and is_valid_field_template(drawing.get("field_template", []))
+    ]
+    valid_templates = [drawing for drawing in drawings if is_valid_field_template(drawing.get("field_template", []))]
+    rows.append(
+        regression_row(
+            "confirmed模板是否存在",
+            "PASS" if confirmed_templates else ("NEED_REVIEW" if valid_templates else "FAIL"),
+            f"已确认模板 {len(confirmed_templates)} 条；可加载模板 {len(valid_templates)} 条。",
+        )
+    )
+
+    try:
+        sample_label = next(case["label"] for case in DEMO_CASES.values() if case["label"].exists())
+        quality = evaluate_label_image(sample_label.read_bytes())
+        rows.append(
+            regression_row(
+                "图片质量检测是否可用",
+                "PASS" if clean_text(quality.get("quality_status", "")) else "FAIL",
+                f"质量状态：{quality.get('quality_status', '-')}; 评分：{quality.get('quality_score', '-')}",
+            )
+        )
+    except Exception as error:
+        rows.append(regression_row("图片质量检测是否可用", "FAIL", f"图片质量检测异常：{error}"))
+
+    cn_case = DEMO_CASES.get("样例A：中文能效标签 - 正确标签")
+    cn_record: dict[str, Any] = {}
+    if cn_case:
+        check = run_demo_self_check(cn_case)
+        cn_record = check.get("record") or {}
+        pass_fields = [
+            clean_text(row.get("中文字段名") or row.get("字段名称"))
+            for row in cn_record.get("comparison_rows", [])
+            if row.get("检测结果") == "PASS"
+        ]
+        rows.append(
+            regression_row(
+                "中文样例是否至少有核心字段 PASS",
+                "PASS" if pass_fields else "FAIL",
+                f"PASS字段：{'、'.join(pass_fields) or '无'}",
+            )
+        )
+    else:
+        rows.append(regression_row("中文样例是否至少有核心字段 PASS", "FAIL", "未找到中文演示样例。"))
+
+    multi_case = DEMO_CASES.get("样例C：阿拉伯语/英语标签 - 多语言字段")
+    if multi_case and multi_case["pdf"].exists():
+        try:
+            drawing_content = extract_drawing_content(multi_case["pdf"])
+            zh_names = [
+                clean_text(item.get("display_name_zh", ""))
+                for item in drawing_content.get("field_template", [])
+                if clean_text(item.get("display_name_zh", ""))
+            ]
+            rows.append(
+                regression_row(
+                    "多语言样例是否能显示中文字段名",
+                    "PASS" if zh_names else "NEED_REVIEW",
+                    f"中文字段名示例：{'、'.join(zh_names[:6]) or '未提取到'}",
+                )
+            )
+        except Exception as error:
+            rows.append(regression_row("多语言样例是否能显示中文字段名", "FAIL", f"多语言图纸解析异常：{error}"))
+    else:
+        rows.append(regression_row("多语言样例是否能显示中文字段名", "NEED_REVIEW", "未找到多语言演示图纸，已使用可部署兜底样例。"))
+
+    template_status = "unconfirmed"
+    field_result = "PASS"
+    advice = final_recommendation(field_result, template_status, "PASS")
+    rows.append(
+        regression_row(
+            "模板未确认时是否只提示风险",
+            "PASS" if "仅供参考" in advice and field_result == "PASS" else "FAIL",
+            f"字段比对结论：{field_result}；模板状态：未确认；最终建议：{advice}",
+        )
+    )
+
+    url_result = parse_qr_content("https://example.com/energy-label?id=123")
+    rows.append(
+        regression_row(
+            "URL二维码不会被当成产品ID",
+            "PASS" if url_result.get("qr_type") == "label_url_qr" else "FAIL",
+            f"二维码类型：{url_result.get('qr_type')}；原因：{url_result.get('reason')}",
+        )
+    )
+
+    synthetic_template = normalize_template_rows(
+        [
+            {"字段 key": "model_number", "中文字段名": "型号", "原始字段名": "MODEL", "标准值": "ABC-001", "是否参与检测": True},
+            {"字段 key": "label_code", "中文字段名": "编码", "原始字段名": "编码", "标准值": "DWG-001", "是否参与检测": False},
+            {"字段 key": "registration_no", "中文字段名": "注册号", "原始字段名": "REGISTRATION NO", "标准值": "R-001", "是否忽略该字段": True},
+        ]
+    )
+    synthetic_fields = template_to_standard_fields(synthetic_template, inspection_only=True)
+    rows.append(
+        regression_row(
+            "is_deleted/include_in_inspection=false不参与检测",
+            "PASS" if set(synthetic_fields) == {"model_number"} else "FAIL",
+            f"参与检测字段：{', '.join(synthetic_fields) or '无'}",
+        )
+    )
+
+    if cn_record:
+        producer_rows = [
+            row for row in cn_record.get("comparison_rows", [])
+            if clean_text(row.get("field_key", "")) == "manufacturer_name" or clean_text(row.get("中文字段名", "")) == "生产者名称"
+        ]
+        bad_china = any(clean_text(row.get("标签值", "")).upper() in {"CHINA", "中国"} for row in producer_rows)
+        rows.append(
+            regression_row(
+                "生产者名称不应错配CHINA",
+                "PASS" if not bad_china else "FAIL",
+                "生产者名称未被填成 CHINA/中国。" if not bad_china else "生产者名称仍被错配为 CHINA/中国。",
+            )
+        )
+
+    return rows
+
+
 def render_deployment_diagnostics_page() -> None:
     st.subheader("演示诊断 / 部署自检")
     st.caption("用于排查云端演示为什么没有正常给出 PASS / FAIL / NEED_REVIEW 的原因。")
@@ -1985,6 +2784,12 @@ def render_deployment_diagnostics_page() -> None:
     st.dataframe(pd.DataFrame(chain_rows), width="stretch", hide_index=True)
     if any(row["状态"] == "否" for row in chain_rows if row["检查项"] in {"产品主数据", "图纸库记录", "有效字段模板"}):
         st.warning("核心数据链路不完整：当前没有加载到有效图纸字段模板时，系统会停止检测并提示原因。")
+    confirmed_row = next((row for row in chain_rows if row["检查项"] == "confirmed模板数量"), {})
+    records_writable_row = next((row for row in chain_rows if row["检查项"] == "检测记录目录可写"), {})
+    if confirmed_row.get("状态") != "是":
+        st.error("当前没有已确认模板，不建议进入现场试用。")
+    if records_writable_row.get("状态") != "是":
+        st.error("检测记录无法保存，不建议进入现场试用。")
 
     st.markdown("**4. 运行演示样例自检**")
     selected_case_name = st.selectbox("选择自检样例", list(DEMO_CASES), key="diagnostic_demo_case")
@@ -2031,6 +2836,33 @@ def render_deployment_diagnostics_page() -> None:
                 if debug_rows:
                     st.write("字段匹配候选值")
                     st.dataframe(pd.DataFrame(debug_rows), width="stretch", hide_index=True)
+
+    st.markdown("**5. 运行核心回归自检**")
+    if st.button("运行核心回归自检", type="primary", width="stretch"):
+        with st.spinner("正在运行核心回归自检..."):
+            regression_rows = core_regression_self_check()
+        st.dataframe(pd.DataFrame(regression_rows), width="stretch", hide_index=True)
+        failed = [row for row in regression_rows if row["状态"] == "FAIL"]
+        review = [row for row in regression_rows if row["状态"] == "NEED_REVIEW"]
+        if failed:
+            st.error(f"核心回归自检存在 {len(failed)} 项失败，请优先处理。")
+        elif review:
+            st.warning(f"核心回归自检存在 {len(review)} 项需要复核。")
+        else:
+            st.success("核心回归自检全部通过。")
+
+    st.markdown("**6. 运行真实样本回归测试**")
+    st.caption("用于每次修改后检查中文样例、多语言样例、图片质量、二维码和模板状态是否被改坏。")
+    if st.button("运行真实样本回归测试", type="primary", width="stretch"):
+        with st.spinner("正在运行真实样本回归测试..."):
+            regression_rows = run_real_sample_regression_suite()
+        st.session_state["last_real_sample_regression_rows"] = regression_rows
+        st.dataframe(pd.DataFrame(regression_rows), width="stretch", hide_index=True)
+        failed = [row for row in regression_rows if row["是否达标"] != "是"]
+        if failed:
+            st.error(f"真实样本回归测试存在 {len(failed)} 项未达标，请先查看失败原因。")
+        else:
+            st.success("真实样本回归测试全部达标。")
 
 
 def field_editor(default_fields: dict[str, Any]) -> dict[str, str]:
@@ -2228,6 +3060,7 @@ def field_template_dataframe(template: list[dict[str, Any]]) -> pd.DataFrame:
                 "field_key": item.get("field_key", item.get("field_id", "")),
                 "中文字段名": item.get("display_name_zh", ""),
                 "原始字段名": item.get("source_field_name", ""),
+                "是否参与检测": "参与检测" if include_in_inspection(item) else "不参与检测",
                 "语言": item.get("source_language", ""),
                 "标准值": item.get("standard_value", ""),
                 "单位": item.get("unit", ""),
@@ -2253,6 +3086,7 @@ def template_confirmation_dataframe(template: list[dict[str, Any]]) -> pd.DataFr
                 "中文字段名": item.get("display_name_zh", ""),
                 "原始字段名": item.get("source_field_name", ""),
                 "标准值": item.get("standard_value", ""),
+                "是否参与检测": bool(include_in_inspection(item)),
                 "单位": item.get("unit", ""),
                 "语言": item.get("source_language", ""),
                 "字段映射状态": item.get("mapping_status", ""),
@@ -2269,6 +3103,7 @@ def template_confirmation_dataframe(template: list[dict[str, Any]]) -> pd.DataFr
 def template_stats(template: list[dict[str, Any]], drawing: dict[str, Any]) -> dict[str, Any]:
     return {
         "字段总数": len(template),
+        "参与检测字段数": sum(1 for item in template if include_in_inspection(item)),
         "自动提取字段数": sum(1 for item in template if clean_text(item.get("source", "drawing")) != "manual"),
         "人工新增字段数": sum(1 for item in template if clean_text(item.get("source", "")) == "manual"),
         "已忽略字段数": sum(1 for item in template if item.get("is_deleted")),
@@ -2468,8 +3303,10 @@ def render_drawing_library_page() -> None:
             "field_key": st.column_config.TextColumn("field_key", disabled=True),
             "中文字段名": st.column_config.TextColumn("中文字段名"),
             "原始字段名": st.column_config.TextColumn("原始字段名"),
+            "是否参与检测": st.column_config.SelectboxColumn("是否参与检测", options=["参与检测", "不参与检测"]),
             "语言": st.column_config.SelectboxColumn("语言", options=["en", "fr", "ar", "zh", "unknown"]),
             "标准值": st.column_config.TextColumn("标准值"),
+            "是否参与检测": st.column_config.CheckboxColumn("是否参与检测"),
             "单位": st.column_config.TextColumn("单位"),
             "映射状态": st.column_config.TextColumn("映射状态", disabled=True),
             "映射置信度": st.column_config.NumberColumn("映射置信度", disabled=True),
@@ -2603,7 +3440,7 @@ def render_template_confirmation_page() -> None:
     st.divider()
     render_template_status_notice(selected_drawing)
     stats = template_stats(template, selected_drawing)
-    stat_cols = st.columns(6)
+    stat_cols = st.columns(len(stats))
     for column, (label, value) in zip(stat_cols, stats.items()):
         column.metric(label, value)
 
@@ -2658,6 +3495,7 @@ def render_template_confirmation_page() -> None:
                     "中文字段名": manual_display_name,
                     "原始字段名": manual_source_name or manual_display_name,
                     "标准值": manual_value,
+                    "是否参与检测": True,
                     "单位": manual_unit,
                     "语言": manual_language,
                     "字段映射状态": "MANUAL_CONFIRMED",
@@ -3077,6 +3915,7 @@ def render_real_image_validation_page() -> None:
 
 def main() -> None:
     ensure_storage()
+    ensure_demo_a_confirmed_template()
     init_session_state()
     render_header()
     page = render_sidebar()

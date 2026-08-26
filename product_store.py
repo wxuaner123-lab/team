@@ -1214,6 +1214,13 @@ def append_quality_record(record: dict[str, Any]) -> dict[str, Any]:
     record = dict(record)
     record.setdefault("inspection_id", datetime.now().strftime("QT-%Y%m%d-%H%M%S-%f"))
     record.setdefault("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    record.setdefault("record_id", record.get("inspection_id", ""))
+    record.setdefault("detection_time", record.get("created_at", ""))
+    record.setdefault("operator_name", record.get("operator", record.get("operator_name", "")))
+    record.setdefault("field_results", record.get("comparison_rows", record.get("field_results", [])))
+    record.setdefault("final_result", record.get("result", record.get("final_result", "")))
+    record.setdefault("template_confirmed_at", record.get("template_confirmed_at", record.get("template_confirmed_time", "")))
+    record.setdefault("final_recommendation", record.get("final_recommendation", ""))
     with INSPECTION_FILE.open("a", encoding="utf-8") as output_file:
         output_file.write(json.dumps(record, ensure_ascii=False))
         output_file.write("\n")

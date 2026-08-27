@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+import time
 from typing import Any
 
 import cv2
@@ -14,6 +15,25 @@ from field_extractor import extract_fields_from_text, summarize_fields
 
 
 _ocr_engine: PaddleOCR | None = None
+_last_ocr_init_seconds = 0.0
+_last_recognize_timing: dict[str, float] = {}
+_cached_build_paddle_ocr_engine = None
+
+try:
+    import streamlit as st
+except Exception:
+    st = None
+
+
+def _build_paddle_ocr_engine() -> PaddleOCR:
+    return PaddleOCR(
+        lang="ch",
+        device="cpu",
+        enable_mkldnn=False,
+        use_doc_orientation_classify=True,
+        use_doc_unwarping=True,
+        use_textline_orientation=True,
+    )
 
 
 def get_ocr_engine() -> PaddleOCR:
@@ -23,17 +43,28 @@ def get_ocr_engine() -> PaddleOCR:
     引擎保留原项目的方向和文档矫正能力；实际 predict 时由
     recognize_image 决定是否启用，以避免真实大图无条件走慢流程。
     """
-    global _ocr_engine
+    global _ocr_engine, _last_ocr_init_seconds, _cached_build_paddle_ocr_engine
     if _ocr_engine is None:
-        _ocr_engine = PaddleOCR(
-            lang="ch",
-            device="cpu",
-            enable_mkldnn=False,
-            use_doc_orientation_classify=True,
-            use_doc_unwarping=True,
-            use_textline_orientation=True,
-        )
+        started = time.perf_counter()
+        if _cached_build_paddle_ocr_engine is None:
+            _cached_build_paddle_ocr_engine = (
+                st.cache_resource(show_spinner=False)(_build_paddle_ocr_engine)
+                if st is not None
+                else _build_paddle_ocr_engine
+            )
+        _ocr_engine = _cached_build_paddle_ocr_engine()
+        _last_ocr_init_seconds = time.perf_counter() - started
+    else:
+        _last_ocr_init_seconds = 0.0
     return _ocr_engine
+
+
+def get_last_ocr_init_seconds() -> float:
+    return _last_ocr_init_seconds
+
+
+def get_last_recognize_timing() -> dict[str, float]:
+    return dict(_last_recognize_timing)
 
 
 def image_bytes_to_pil(image_bytes: bytes) -> Image.Image:
@@ -88,7 +119,7 @@ def to_plain_points(value: Any) -> Any:
     return value
 
 
-def resize_for_ocr(image: Image.Image, max_side: int = 1800) -> Image.Image:
+def resize_for_ocr(image: Image.Image, max_side: int = 1600) -> Image.Image:
     width, height = image.size
     current_max = max(width, height)
     if current_max <= max_side:
@@ -211,7 +242,7 @@ def preprocess_label_image(
     image_bytes: bytes,
     debug_output_dir: str | Path | None = None,
     file_stem: str = "label",
-    max_side: int = 1800,
+    max_side: int = 1600,
 ) -> list[dict[str, Any]]:
     """
     返回多个候选图像及处理信息。
@@ -220,8 +251,13 @@ def preprocess_label_image(
     save_debug_image(original, debug_output_dir, "原图", file_stem)
 
     resized = resize_for_ocr(original, max_side=max_side)
+    auto_resized = resized.size != original.size
     deskewed, skew_angle = deskew_image(resized)
     save_debug_image(deskewed, debug_output_dir, "旋转校正图", file_stem)
+
+    full_gray, full_enhanced, _ = enhance_for_ocr(deskewed)
+    save_debug_image(full_gray.convert("RGB"), debug_output_dir, "整图灰度图", file_stem)
+    save_debug_image(full_enhanced, debug_output_dir, "整图增强图", file_stem)
 
     cropped, crop_note = crop_label_region(deskewed)
     cropped = resize_for_ocr(cropped, max_side=max_side)
@@ -234,9 +270,37 @@ def preprocess_label_image(
 
     candidates: list[dict[str, Any]] = [
         {
+            "name": "整图增强",
+            "image": full_enhanced,
+            "steps": [
+                "整图增强候选，避免边框裁剪丢失字段",
+                f"OCR自动压缩: {original.size[0]}x{original.size[1]} -> {resized.size[0]}x{resized.size[1]}"
+                if auto_resized
+                else "OCR未压缩: 图片尺寸未超过阈值",
+            ],
+            "preprocess_meta": {
+                "original_size": original.size,
+                "ocr_input_size": full_enhanced.size,
+                "max_side": max_side,
+                "auto_resized": auto_resized,
+            },
+        },
+        {
             "name": "裁剪增强",
             "image": enhanced,
-            "steps": [crop_note, f"倾斜角: {skew_angle:.2f}" if skew_angle is not None else "未检测到倾斜"],
+            "steps": [
+                crop_note,
+                f"倾斜角: {skew_angle:.2f}" if skew_angle is not None else "未检测到倾斜",
+                f"OCR自动压缩: {original.size[0]}x{original.size[1]} -> {resized.size[0]}x{resized.size[1]}"
+                if auto_resized
+                else "OCR未压缩: 图片尺寸未超过阈值",
+            ],
+            "preprocess_meta": {
+                "original_size": original.size,
+                "ocr_input_size": enhanced.size,
+                "max_side": max_side,
+                "auto_resized": auto_resized,
+            },
         }
     ]
 
@@ -247,6 +311,7 @@ def preprocess_label_image(
                 "name": "裁剪增强_顺时针90",
                 "image": enhanced.rotate(90, expand=True, fillcolor=(255, 255, 255)),
                 "steps": ["竖图横排候选: 顺时针90度"],
+                "preprocess_meta": candidates[0]["preprocess_meta"],
             }
         )
         candidates.append(
@@ -254,6 +319,7 @@ def preprocess_label_image(
                 "name": "裁剪增强_逆时针90",
                 "image": enhanced.rotate(270, expand=True, fillcolor=(255, 255, 255)),
                 "steps": ["竖图横排候选: 逆时针90度"],
+                "preprocess_meta": candidates[0]["preprocess_meta"],
             }
         )
 
@@ -262,6 +328,7 @@ def preprocess_label_image(
             "name": "二值化",
             "image": binary,
             "steps": ["自适应二值化候选"],
+            "preprocess_meta": candidates[0]["preprocess_meta"],
         }
     )
     return candidates
@@ -272,14 +339,24 @@ def recognize_image(
     confidence_threshold: float = 0.30,
     fast_mode: bool = True,
 ) -> tuple[str, list[dict[str, Any]], float]:
-    image_array = np.array(image.convert("RGB"))
+    global _last_recognize_timing
+    init_started = time.perf_counter()
     ocr_engine = get_ocr_engine()
+    init_seconds = time.perf_counter() - init_started
+    image_array = np.array(image.convert("RGB"))
+    predict_started = time.perf_counter()
     results = ocr_engine.predict(
         input=image_array,
         use_doc_orientation_classify=not fast_mode,
         use_doc_unwarping=False if fast_mode else True,
         use_textline_orientation=False if fast_mode else True,
     )
+    predict_seconds = time.perf_counter() - predict_started
+    _last_recognize_timing = {
+        "ocr_init_seconds": round(init_seconds, 4),
+        "ocr_model_init_seconds": round(get_last_ocr_init_seconds(), 4),
+        "ocr_predict_seconds": round(predict_seconds, 4),
+    }
 
     all_texts: list[str] = []
     detail_rows: list[dict[str, Any]] = []
@@ -347,13 +424,18 @@ def recognize_label(
     """
     识别标签图片并返回结构化结果。
     """
+    total_started = time.perf_counter()
+    preprocess_started = time.perf_counter()
     candidates = preprocess_label_image(
         image_bytes,
         debug_output_dir=debug_output_dir,
         file_stem=file_stem,
     )
+    preprocess_seconds = time.perf_counter() - preprocess_started
     warnings: list[str] = []
     best_result: dict[str, Any] | None = None
+    ocr_init_seconds = 0.0
+    ocr_predict_seconds = 0.0
 
     for candidate_index, candidate in enumerate(candidates):
         raw_text, rows, confidence = recognize_image(
@@ -361,6 +443,9 @@ def recognize_label(
             confidence_threshold=confidence_threshold,
             fast_mode=True,
         )
+        timing = get_last_recognize_timing()
+        ocr_init_seconds += float(timing.get("ocr_model_init_seconds", 0.0) or 0.0)
+        ocr_predict_seconds += float(timing.get("ocr_predict_seconds", 0.0) or 0.0)
         fields = extract_fields_from_text(raw_text)
         energy_fields, field_match_debug = parse_energy_label_fields(raw_text, rows)
         fields = merge_energy_fields(fields, energy_fields)
@@ -374,6 +459,7 @@ def recognize_label(
             "ocr_rows": rows,
             "selected_preprocess": candidate["name"],
             "preprocess_steps": candidate.get("steps", []),
+            "preprocess_meta": candidate.get("preprocess_meta", {}),
             "warnings": list(warnings),
             "score": round(score, 4),
         }
@@ -392,6 +478,14 @@ def recognize_label(
         best_result["warnings"].append("OCR未提取到可比较字段，需要人工确认。")
     if best_result["confidence"] < 0.65:
         best_result["warnings"].append("OCR平均置信度偏低。")
+
+    best_result["performance_trace"] = {
+        "image_load_seconds": 0.0,
+        "ocr_preprocess_seconds": round(preprocess_seconds, 4),
+        "ocr_init_seconds": round(ocr_init_seconds, 4),
+        "ocr_recognition_seconds": round(ocr_predict_seconds, 4),
+        "ocr_total_seconds": round(time.perf_counter() - total_started, 4),
+    }
 
     return best_result
 

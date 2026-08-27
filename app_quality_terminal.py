@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 import importlib.util
 import os
@@ -59,6 +60,13 @@ from product_store import (
 from qr_parser import decode_qr_image, parse_qr_content
 
 
+st.set_page_config(
+    page_title="制造现场质量确认终端",
+    page_icon="✓",
+    layout="wide",
+)
+
+
 DEFAULT_REAL_IMAGE_DIR = PROJECT_ROOT / "data" / "实物图" / "data 2"
 DEPLOYABLE_DEMO_DIR = PROJECT_ROOT / "data" / "图纸标签OCR_MVP_五组测试样品"
 DEPLOYABLE_CN_ENERGY_DEMO_DIR = PROJECT_ROOT / "data" / "demo_cn_energy_label"
@@ -79,6 +87,49 @@ def project_relative_path(path: Path) -> str:
         return str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
     except Exception:
         return str(path)
+
+
+@st.cache_data(show_spinner=False)
+def cached_extract_drawing_content(path_text: str, mtime: float) -> dict[str, Any]:
+    _ = mtime
+    return extract_drawing_content(Path(path_text))
+
+
+def extract_drawing_content_cached(path: Path) -> dict[str, Any]:
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return cached_extract_drawing_content(str(path), mtime)
+
+
+def detection_cache_key(case_id: str, label_bytes: bytes, label_name: str) -> str:
+    digest = hashlib.sha256(label_bytes).hexdigest()[:16]
+    return f"{case_id}:{label_name}:{digest}"
+
+
+def add_perf(perf: dict[str, float], name: str, seconds: float) -> None:
+    perf[name] = round(float(seconds), 4)
+
+
+def perf_rows(perf: dict[str, Any]) -> list[dict[str, Any]]:
+    labels = {
+        "image_load_seconds": "图片加载耗时",
+        "quality_check_seconds": "图片质量检测耗时",
+        "ocr_init_seconds": "OCR 初始化耗时",
+        "ocr_recognition_seconds": "OCR 识别耗时",
+        "ocr_preprocess_seconds": "OCR 预处理耗时",
+        "template_load_seconds": "图纸模板加载耗时",
+        "field_match_seconds": "字段匹配耗时",
+        "field_compare_seconds": "字段比对耗时",
+        "record_save_seconds": "记录保存耗时",
+        "total_seconds": "总耗时",
+    }
+    return [
+        {"阶段": labels.get(key, key), "耗时秒": value}
+        for key, value in perf.items()
+        if key in labels
+    ]
 
 
 DEMO_CASES = {
@@ -438,7 +489,7 @@ def ensure_demo_a_confirmed_template() -> dict[str, Any] | None:
             return drawing
         content = {}
         if not is_valid_field_template(drawing.get("field_template", [])):
-            content = extract_drawing_content(case["pdf"])
+            content = extract_drawing_content_cached(case["pdf"])
             drawing["drawing_ocr_text"] = content.get("raw_text", "")
             drawing["parse_mode"] = content.get("parse_mode", "")
             drawing["warnings"] = content.get("warnings", [])
@@ -460,7 +511,7 @@ def ensure_demo_a_confirmed_template() -> dict[str, Any] | None:
         save_drawings(drawings)
         return drawing
 
-    content = extract_drawing_content(case["pdf"])
+    content = extract_drawing_content_cached(case["pdf"])
     field_template = demo_a_confirmed_template()
     drawing = {
         "drawing_id": DEMO_A_DRAWING_ID,
@@ -490,15 +541,6 @@ def ensure_demo_a_confirmed_template() -> dict[str, Any] | None:
     drawings.append(drawing)
     save_drawings(drawings)
     return drawing
-
-
-
-st.set_page_config(
-    page_title="制造现场质量确认终端",
-    page_icon="✓",
-    layout="wide",
-)
-
 
 STATUS_COLOR = {
     "PASS": "#16794c",
@@ -1263,7 +1305,7 @@ def drawing_field_template(drawing: dict[str, Any] | None) -> list[dict[str, Any
     drawing_path = resolve_project_path(clean_text(drawing.get("pdf_path", "")))
     if drawing_path and drawing_path.exists():
         try:
-            content = extract_drawing_content(drawing_path)
+            content = extract_drawing_content_cached(drawing_path)
             parsed_template = content.get("field_template", [])
             if parsed_template:
                 return parsed_template
@@ -1281,7 +1323,7 @@ def drawing_field_template_source(drawing: dict[str, Any] | None) -> str:
     drawing_path = resolve_project_path(clean_text(drawing.get("pdf_path", "")))
     if drawing_path and drawing_path.exists():
         try:
-            content = extract_drawing_content(drawing_path)
+            content = extract_drawing_content_cached(drawing_path)
             if content.get("field_template"):
                 return "当前PDF解析生成"
         except Exception:
@@ -1313,7 +1355,7 @@ def load_product_drawing_fields(
         drawing_path = resolve_project_path(clean_text(drawing.get("pdf_path", "")))
         if drawing_path and drawing_path.exists():
             try:
-                drawing_content = extract_drawing_content(drawing_path)
+                drawing_content = extract_drawing_content_cached(drawing_path)
                 warnings.extend(list(drawing_content.get("warnings", [])))
                 warnings.append(f"图纸解析模式：{drawing_content.get('parse_mode', '-')}")
                 parsed_template = drawing_content.get("field_template", [])
@@ -1484,7 +1526,10 @@ def get_label_image_bytes() -> tuple[bytes | None, str, dict[str, Any], bool]:
 
     image_bytes = selected_file.getvalue()
     filename = getattr(selected_file, "name", "camera_label.png") or "camera_label.png"
+    quality_started = time.perf_counter()
     quality = evaluate_label_image(image_bytes)
+    quality.setdefault("performance_trace", {})
+    quality["performance_trace"]["quality_check_seconds"] = round(time.perf_counter() - quality_started, 4)
     can_continue = render_quality_gate(quality, key_prefix="inspection_quality")
 
     return image_bytes, filename, quality, can_continue
@@ -1578,6 +1623,7 @@ def run_demo_detection(
     label_name: str,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    perf: dict[str, float] = {"image_load_seconds": 0.0, "record_save_seconds": 0.0}
     if not case["pdf"].exists():
         comparison_rows = [
             system_issue_row(
@@ -1589,8 +1635,9 @@ def run_demo_detection(
         elapsed = time.perf_counter() - started
         return build_demo_record(case, label_name, "SYSTEM_NOT_READY", comparison_rows, elapsed)
 
+    template_started = time.perf_counter()
     demo_drawing = ensure_demo_a_confirmed_template() if case.get("case_id") == "demo_cn_pass" else demo_drawing_for_case(case)
-    drawing_content = extract_drawing_content(case["pdf"]) if not demo_drawing else {
+    drawing_content = extract_drawing_content_cached(case["pdf"]) if not demo_drawing else {
         "field_template": demo_drawing.get("field_template", []),
         "raw_text": demo_drawing.get("drawing_ocr_text", ""),
         "parse_mode": demo_drawing.get("parse_mode", ""),
@@ -1599,7 +1646,10 @@ def run_demo_detection(
     template = demo_drawing.get("field_template", []) if demo_drawing else drawing_content.get("field_template", [])
     inspection_template = inspection_field_template(template)
     standard_snapshot = template_to_standard_fields(inspection_template, inspection_only=True)
+    add_perf(perf, "template_load_seconds", time.perf_counter() - template_started)
+    quality_started = time.perf_counter()
     quality = evaluate_label_image(label_bytes)
+    add_perf(perf, "quality_check_seconds", time.perf_counter() - quality_started)
     if not is_valid_field_template(template) or not standard_snapshot:
         comparison_rows = [
             system_issue_row(
@@ -1629,6 +1679,10 @@ def run_demo_detection(
         debug_output_dir=None,
         file_stem=f"{case['case_id']}_{datetime.now().strftime('%H%M%S')}",
     )
+    ocr_perf = label_result.get("performance_trace", {})
+    add_perf(perf, "ocr_init_seconds", float(ocr_perf.get("ocr_init_seconds", 0.0) or 0.0))
+    add_perf(perf, "ocr_preprocess_seconds", float(ocr_perf.get("ocr_preprocess_seconds", 0.0) or 0.0))
+    add_perf(perf, "ocr_recognition_seconds", float(ocr_perf.get("ocr_recognition_seconds", 0.0) or 0.0))
     if not clean_text(label_result.get("raw_text", "")):
         comparison_rows = [
             system_issue_row(
@@ -1654,11 +1708,13 @@ def run_demo_detection(
         return record
 
     if inspection_template:
+        field_match_started = time.perf_counter()
         label_fields_for_compare, dynamic_debug = match_label_to_template(
             inspection_template,
             label_result.get("raw_text", ""),
             label_result.get("ocr_rows", []),
         )
+        add_perf(perf, "field_match_seconds", time.perf_counter() - field_match_started)
         label_result["fields"] = {
             **label_result.get("fields", {}),
             **label_fields_for_compare,
@@ -1671,6 +1727,7 @@ def run_demo_detection(
         label_fields_for_compare = {}
 
     if inspection_template and standard_snapshot:
+        compare_started = time.perf_counter()
         comparison_rows, overall_result = compare_fields(
             standard_snapshot,
             label_fields_for_compare,
@@ -1680,6 +1737,7 @@ def run_demo_detection(
         if case.get("demo_fail"):
             comparison_rows = apply_demo_fail_override(comparison_rows)
         overall_result = overall_from_rows(comparison_rows)
+        add_perf(perf, "field_compare_seconds", time.perf_counter() - compare_started)
     else:
         comparison_rows = [
             system_issue_row(
@@ -1691,6 +1749,7 @@ def run_demo_detection(
         overall_result = "SYSTEM_NOT_READY"
 
     elapsed = time.perf_counter() - started
+    add_perf(perf, "total_seconds", elapsed)
     fail_fields = [
         clean_text(row.get("中文字段名") or row.get("字段名称"))
         for row in comparison_rows
@@ -1741,6 +1800,7 @@ def run_demo_detection(
             "is_manual_binding": False,
         },
         "elapsed_seconds": elapsed,
+        "performance_trace": perf,
         "is_demo_fail_case": bool(case.get("demo_fail")),
     }
 
@@ -1813,18 +1873,30 @@ def render_inspection_page() -> None:
     can_run = bool(image_bytes and quality_can_continue and template_ready)
     if st.button("开始检测", type="primary", disabled=not can_run, width="stretch"):
         with st.spinner("正在识别标签并比对图纸标准字段..."):
+            detection_started = time.perf_counter()
+            perf: dict[str, float] = {
+                "image_load_seconds": 0.0,
+                "template_load_seconds": 0.0,
+                "quality_check_seconds": float((quality_result.get("performance_trace") or {}).get("quality_check_seconds", 0.0) or 0.0),
+            }
             label_result = recognize_label(
                 image_bytes,
                 confidence_threshold=0.30,
                 debug_output_dir=PROJECT_ROOT / "debug_output" / "quality_terminal",
                 file_stem=f"{product.get('product_id', 'product')}_{datetime.now().strftime('%H%M%S')}",
             )
+            ocr_perf = label_result.get("performance_trace", {})
+            add_perf(perf, "ocr_init_seconds", float(ocr_perf.get("ocr_init_seconds", 0.0) or 0.0))
+            add_perf(perf, "ocr_preprocess_seconds", float(ocr_perf.get("ocr_preprocess_seconds", 0.0) or 0.0))
+            add_perf(perf, "ocr_recognition_seconds", float(ocr_perf.get("ocr_recognition_seconds", 0.0) or 0.0))
             if inspection_template:
+                field_match_started = time.perf_counter()
                 label_fields_for_compare, dynamic_debug = match_label_to_template(
                     inspection_template,
                     label_result.get("raw_text", ""),
                     label_result.get("ocr_rows", []),
                 )
+                add_perf(perf, "field_match_seconds", time.perf_counter() - field_match_started)
                 label_result["fields"] = {
                     **label_result.get("fields", {}),
                     **label_fields_for_compare,
@@ -1845,6 +1917,7 @@ def render_inspection_page() -> None:
                 ]
                 overall_result = "OCR_EMPTY"
             elif inspection_template and standard_snapshot:
+                compare_started = time.perf_counter()
                 comparison_rows, overall_result = compare_fields(
                     standard_snapshot,
                     label_fields_for_compare,
@@ -1852,6 +1925,7 @@ def render_inspection_page() -> None:
                 )
                 comparison_rows = enrich_comparison_rows_with_template(comparison_rows, inspection_template)
                 overall_result = overall_from_rows(comparison_rows)
+                add_perf(perf, "field_compare_seconds", time.perf_counter() - compare_started)
             else:
                 comparison_rows = [
                     system_issue_row(
@@ -1863,6 +1937,7 @@ def render_inspection_page() -> None:
                 overall_result = "SYSTEM_NOT_READY"
             inspection_id = datetime.now().strftime("QT-%Y%m%d-%H%M%S-%f")
             try:
+                save_started = time.perf_counter()
                 evidence_path = save_evidence_image(
                     image_bytes,
                     inspection_id,
@@ -1881,6 +1956,10 @@ def render_inspection_page() -> None:
                 )
                 record["quality_result"] = quality_result_summary(quality_result)
                 record["inspection_id"] = inspection_id
+                add_perf(perf, "record_save_seconds", time.perf_counter() - save_started)
+                add_perf(perf, "total_seconds", time.perf_counter() - detection_started)
+                record["elapsed_seconds"] = perf["total_seconds"]
+                record["performance_trace"] = perf
                 record["final_recommendation"] = final_recommendation(
                     overall_result,
                     record.get("template_status", ""),
@@ -1914,6 +1993,10 @@ def render_inspection_page() -> None:
         )
 
         with st.expander("OCR识别文字与字段匹配调试信息"):
+            performance = perf_rows(record.get("performance_trace", {}))
+            if performance:
+                st.write("性能耗时统计")
+                st.dataframe(pd.DataFrame(performance), width="stretch", hide_index=True)
             st.write(f"OCR平均置信度：{record.get('ocr_confidence', 0)}")
             st.write(f"预处理方式：{record.get('selected_preprocess', '-')}")
             for warning in record.get("ocr_warnings", []):
@@ -1985,7 +2068,7 @@ def render_demo_mode_page() -> None:
     st.markdown("**1. 加载图纸字段模板**")
     if st.button("预览图纸字段模板", width="stretch"):
         with st.spinner("正在解析演示图纸..."):
-            drawing_content = extract_drawing_content(pdf_path)
+            drawing_content = extract_drawing_content_cached(pdf_path)
         template = drawing_content.get("field_template", [])
         st.session_state["demo_preview_template"] = template
         st.session_state["demo_preview_drawing_text"] = drawing_content.get("raw_text", "")
@@ -2023,13 +2106,15 @@ def render_demo_mode_page() -> None:
     st.image(label_bytes, caption=f"当前标签图片：{label_name}", width=360)
     demo_quality = evaluate_label_image(label_bytes)
     demo_quality_can_continue = render_quality_gate(demo_quality, key_prefix="demo_quality")
+    current_demo_key = detection_cache_key(case["case_id"], label_bytes, label_name)
 
     st.markdown("**3. 开始检测**")
     if st.button("开始演示检测", type="primary", disabled=not demo_quality_can_continue, width="stretch"):
         with st.spinner("正在识别标签并生成演示结果..."):
             st.session_state["last_demo_record"] = run_demo_detection(case, label_bytes, label_name)
+            st.session_state["last_demo_record_key"] = current_demo_key
 
-    record = st.session_state.get("last_demo_record")
+    record = st.session_state.get("last_demo_record") if st.session_state.get("last_demo_record_key") == current_demo_key else None
     if not record:
         render_demo_version_notice()
         return
@@ -2106,6 +2191,13 @@ def render_demo_mode_page() -> None:
             st.error(f"演示检测记录保存失败：{error}")
 
     with st.expander("详情：标签识别结果与字段匹配信息"):
+        performance = perf_rows(record.get("performance_trace", {}))
+        if performance:
+            st.write("性能耗时统计")
+            st.dataframe(pd.DataFrame(performance), width="stretch", hide_index=True)
+            preprocess_meta = (record.get("label_result") or {}).get("preprocess_meta", {})
+            if preprocess_meta.get("auto_resized"):
+                st.info("已为 OCR 自动压缩图片，原始图片未被修改。")
         st.write("二维码解析与匹配信息")
         st.json(record.get("qr_result", {}))
         quality = record.get("label_quality", {})
@@ -2686,7 +2778,7 @@ def core_regression_self_check() -> list[dict[str, str]]:
     multi_case = DEMO_CASES.get("样例C：阿拉伯语/英语标签 - 多语言字段")
     if multi_case and multi_case["pdf"].exists():
         try:
-            drawing_content = extract_drawing_content(multi_case["pdf"])
+            drawing_content = extract_drawing_content_cached(multi_case["pdf"])
             zh_names = [
                 clean_text(item.get("display_name_zh", ""))
                 for item in drawing_content.get("field_template", [])
@@ -3003,7 +3095,7 @@ def render_admin_page() -> None:
         if drawing_path and drawing_path.exists():
             if st.button("解析当前绑定PDF"):
                 with st.spinner("正在解析PDF图纸..."):
-                    content = extract_drawing_content(drawing_path)
+                    content = extract_drawing_content_cached(drawing_path)
                 st.write(f"解析模式：{content.get('parse_mode', '-')}")
                 for warning in content.get("warnings", []):
                     st.warning(warning)
@@ -3331,7 +3423,7 @@ def render_drawing_library_page() -> None:
             st.error("当前图纸PDF文件不存在，无法重新生成模板。")
         else:
             with st.spinner("正在重新OCR图纸并生成动态字段模板..."):
-                content = extract_drawing_content(drawing_path)
+                content = extract_drawing_content_cached(drawing_path)
                 regenerated_template = content.get("field_template", [])
             if regenerated_template:
                 updated = update_drawing_field_template(

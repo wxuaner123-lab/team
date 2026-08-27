@@ -4,7 +4,9 @@ import re
 from typing import Any
 
 from field_config import clean_text, normalize_value
+from field_definitions import get_field_definition
 from field_mapper import detect_language, map_field_name, mapping_for_key, normalize_field_text
+from layout_value_binder import bind_field_values_by_layout
 
 
 FIELD_DICTIONARY: list[dict[str, Any]] = [
@@ -624,8 +626,75 @@ def build_dynamic_field_template(
 
     if not template:
         template = build_template_from_text(raw_text)
+    template = apply_layout_bindings_to_template(template, rows)
     add_energy_class_if_missing(template, rows)
     return template
+
+
+def apply_layout_bindings_to_template(
+    template: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not rows:
+        return template
+    bindings = bind_field_values_by_layout(rows)
+    if not bindings:
+        return template
+
+    merged = [dict(item) for item in template]
+    index_by_key = {
+        clean_text(item.get("field_key", "") or item.get("field_id", "")): index
+        for index, item in enumerate(merged)
+        if clean_text(item.get("field_key", "") or item.get("field_id", ""))
+    }
+
+    for field_key, binding in bindings.items():
+        definition = get_field_definition(field_key) or {}
+        value = clean_text(binding.get("selected_value", ""))
+        if not value:
+            continue
+        confidence = float(binding.get("confidence", 0) or 0)
+        min_confidence = float(definition.get("min_confidence_for_pass", 0.75) or 0.75)
+        source_name = clean_text(binding.get("source_field_name", "")) or clean_text(definition.get("aliases", ("",))[0])
+        item = apply_field_mapping(
+            {
+                "field_id": field_key,
+                "field_key": field_key,
+                "display_name_zh": clean_text(definition.get("display_name_zh", "")) or field_key,
+                "source_field_name": source_name,
+                "source_language": detect_language(source_name),
+                "standard_value": value,
+                "unit": infer_unit(value),
+                "bbox": (binding.get("anchors") or [{}])[0].get("bbox"),
+                "confidence": confidence,
+                "value_type": value_type_for_field_key(field_key),
+                "required": True,
+                "candidates": binding.get("candidates", [])[:5],
+                "match_reason": binding.get("select_reason", "布局字段绑定"),
+                "needs_review": bool(binding.get("needs_review")) or confidence < min_confidence,
+                "layout_binding": binding,
+            },
+            unknown_index=len(merged) + 1,
+        )
+        if field_key in index_by_key:
+            current = merged[index_by_key[field_key]]
+            current_confidence = float(current.get("confidence", 0) or 0)
+            if confidence >= current_confidence or clean_text(current.get("standard_value", "")) != value:
+                merged[index_by_key[field_key]] = {**current, **item}
+        else:
+            index_by_key[field_key] = len(merged)
+            merged.append(item)
+
+    deduped: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for item in merged:
+        key = clean_text(item.get("field_key", "") or item.get("field_id", ""))
+        if key and key in seen_keys:
+            continue
+        if key:
+            seen_keys.add(key)
+        deduped.append(item)
+    return deduped
 
 
 def add_energy_class_if_missing(template: list[dict[str, Any]], rows: list[dict[str, Any]]) -> None:
@@ -808,6 +877,12 @@ def match_label_to_template(
     rows = label_ocr_rows or []
     label_fields: dict[str, str] = {}
     debug: dict[str, Any] = {}
+    target_keys = [
+        clean_text(item.get("field_key", "") or item.get("field_id", ""))
+        for item in template
+        if not item.get("is_deleted") and include_in_inspection(item)
+    ]
+    layout_bindings = bind_field_values_by_layout(rows, target_keys)
 
     for item in template:
         if item.get("is_deleted") or not include_in_inspection(item):
@@ -816,81 +891,99 @@ def match_label_to_template(
         if not field_key:
             continue
         definition = definition_for_template_item(item)
-        anchors = [
-            row
-            for row in rows
-            if normalize_key(clean_text(item.get("source_field_name", ""))) in normalize_key(row_text(row))
-            or any(normalize_key(alias) in normalize_key(row_text(row)) for alias in definition.get("aliases", ()))
-        ]
-        if definition.get("value_type") == "presence":
-            found = bool(anchors) or normalize_key(item.get("source_field_name", "")) in normalize_key(label_raw_text)
-            value = clean_text(item.get("standard_value", "")) if found else ""
-            candidates: list[dict[str, Any]] = []
-            reason = "标签中检测到该标题/类别字段" if found else "标签中未定位该标题/类别字段"
-            confidence = 0.9 if found else 0.0
-        elif anchors:
-            candidates = nearby_candidates(anchors[0], rows, definition)
-            standard_value = find_standard_value_in_text(label_raw_text, item, definition)
-            if standard_value:
-                value = standard_value
-                reason = "已定位字段名，标签全文中找到与图纸标准值一致的值"
-                confidence = 0.82
-                if not candidates or candidates[0].get("value") != value:
-                    candidates.insert(
-                        0,
-                        {
-                            "value": value,
-                            "raw_text": value,
-                            "row_index": "",
-                            "confidence": confidence,
-                            "bbox": None,
-                            "score": 120,
-                            "reason": reason,
-                        },
-                    )
-            elif candidates:
-                value = candidates[0]["value"]
-                reason = candidates[0]["reason"]
-                confidence = min(0.99, max(0.0, float(candidates[0].get("score", 0)) / 140))
+        layout_binding = layout_bindings.get(field_key)
+        layout_value = clean_text((layout_binding or {}).get("selected_value", ""))
+        layout_confidence = float((layout_binding or {}).get("confidence", 0) or 0)
+        layout_min_confidence = float((get_field_definition(field_key) or {}).get("min_confidence_for_pass", 0.75) or 0.75)
+        layout_warnings = [clean_text(item) for item in (layout_binding or {}).get("warnings", []) if clean_text(item)]
+
+        if (
+            layout_binding
+            and definition.get("value_type") != "presence"
+            and layout_value
+            and layout_confidence >= layout_min_confidence
+            and not layout_warnings
+        ):
+            candidates = layout_binding.get("candidates", [])
+            value = layout_value
+            reason = f"布局字段绑定：{layout_binding.get('select_reason', '')}".strip("：")
+            confidence = layout_confidence
+        else:
+            anchors = [
+                row
+                for row in rows
+                if normalize_key(clean_text(item.get("source_field_name", ""))) in normalize_key(row_text(row))
+                or any(normalize_key(alias) in normalize_key(row_text(row)) for alias in definition.get("aliases", ()))
+            ]
+            if definition.get("value_type") == "presence":
+                found = bool(anchors) or normalize_key(item.get("source_field_name", "")) in normalize_key(label_raw_text)
+                value = clean_text(item.get("standard_value", "")) if found else ""
+                candidates = []
+                reason = "标签中检测到该标题/类别字段" if found else "标签中未定位该标题/类别字段"
+                confidence = 0.9 if found else 0.0
+            elif anchors:
+                candidates = nearby_candidates(anchors[0], rows, definition)
+                standard_value = find_standard_value_in_text(label_raw_text, item, definition)
+                if standard_value:
+                    value = standard_value
+                    reason = "已定位字段名，标签全文中找到与图纸标准值一致的值"
+                    confidence = 0.82
+                    if not candidates or candidates[0].get("value") != value:
+                        candidates.insert(
+                            0,
+                            {
+                                "value": value,
+                                "raw_text": value,
+                                "row_index": "",
+                                "confidence": confidence,
+                                "bbox": None,
+                                "score": 120,
+                                "reason": reason,
+                            },
+                        )
+                elif candidates:
+                    value = candidates[0]["value"]
+                    reason = candidates[0]["reason"]
+                    confidence = min(0.99, max(0.0, float(candidates[0].get("score", 0)) / 140))
+                else:
+                    fallback_value = fallback_find_value_in_text(label_raw_text, item, definition)
+                    value = fallback_value
+                    reason = "已定位字段名，使用文本邻近行兜底匹配" if fallback_value else "定位到字段名，但未找到合理候选值"
+                    confidence = 0.55 if fallback_value else 0.0
+                    if value:
+                        candidates = [
+                            {
+                                "value": value,
+                                "raw_text": value,
+                                "row_index": "",
+                                "confidence": confidence,
+                                "bbox": None,
+                                "score": 70,
+                                "reason": reason,
+                            }
+                        ]
             else:
-                fallback_value = fallback_find_value_in_text(label_raw_text, item, definition)
-                value = fallback_value
-                reason = "已定位字段名，使用文本邻近行兜底匹配" if fallback_value else "定位到字段名，但未找到合理候选值"
-                confidence = 0.55 if fallback_value else 0.0
-                if value:
+                candidates = []
+                standard_value = find_standard_value_in_text(label_raw_text, item, definition)
+                if standard_value:
+                    value = standard_value
+                    reason = "字段锚点未稳定识别，但标签全文中找到与图纸标准值一致的值"
+                    confidence = 0.72
                     candidates = [
                         {
                             "value": value,
                             "raw_text": value,
                             "row_index": "",
-                            "confidence": confidence,
+                            "confidence": 0.72,
                             "bbox": None,
-                            "score": 70,
+                            "score": 92,
                             "reason": reason,
                         }
                     ]
-        else:
-            candidates = []
-            standard_value = find_standard_value_in_text(label_raw_text, item, definition)
-            if standard_value:
-                value = standard_value
-                reason = "字段锚点未稳定识别，但标签全文中找到与图纸标准值一致的值"
-                confidence = 0.72
-                candidates = [
-                    {
-                        "value": value,
-                        "raw_text": value,
-                        "row_index": "",
-                        "confidence": 0.72,
-                        "bbox": None,
-                        "score": 92,
-                        "reason": reason,
-                    }
-                ]
-            else:
-                value = fallback_find_value_in_text(label_raw_text, item, definition)
-                reason = "文本兜底匹配" if value else "标签中未定位字段锚点"
-                confidence = 0.52 if value else 0.0
+                else:
+                    value = fallback_find_value_in_text(label_raw_text, item, definition)
+                    reason = "文本兜底匹配" if value else "标签中未定位字段锚点"
+                    confidence = 0.52 if value else 0.0
         if definition.get("field_id") == "manufacturer_name" and is_country_value(value):
             value = ""
             candidates = []
@@ -925,6 +1018,7 @@ def match_label_to_template(
             "confidence": round(confidence, 4),
             "needs_review": not bool(value) or len(set(strong_candidate_values)) > 1 or confidence < 0.5,
             "candidates": candidates[:6],
+            "layout_binding": layout_binding or {},
         }
 
     return label_fields, debug

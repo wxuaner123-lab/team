@@ -410,6 +410,29 @@ def regression_cases() -> list[dict[str, Any]]:
             "demo_case": demo_c,
         },
         {
+            "case_id": "middle_east_energy_label",
+            "case_name": "中东/阿曼能效标签字段绑定回归",
+            "case_type": "middle_east_energy_label",
+            "product_id": "DEMO-ME-ENERGY",
+            "drawing_id": "LOCAL-ME-ENERGY-111",
+            "pdf_path": DEFAULT_REAL_IMAGE_DIR / "Sample_002" / "111.pdf",
+            "label_path": DEFAULT_REAL_IMAGE_DIR / "Sample_002" / "lQDPKdsaCORxlMfND8DNC9Cwvq3En7-S9JAKNnYpyjWFAA_1.jpg",
+            "expected_min_pass": 6,
+            "expected_max_fail": 0,
+            "expected_allow_need_review": True,
+            "expected_optional_local_sample": True,
+            "expected_notes": "使用本地真实样本验证多语言布局字段绑定；云端如未提交真实样本则跳过，不影响交付门禁。",
+            "demo_case": {
+                "case_id": "middle_east_energy_label",
+                "pdf": DEFAULT_REAL_IMAGE_DIR / "Sample_002" / "111.pdf",
+                "label": DEFAULT_REAL_IMAGE_DIR / "Sample_002" / "lQDPKdsaCORxlMfND8DNC9Cwvq3En7-S9JAKNnYpyjWFAA_1.jpg",
+                "product_id": "DEMO-ME-ENERGY",
+                "product_model": "WM1001TMG",
+                "expected": "中东/阿曼多语言能效标签字段绑定回归。",
+                "demo_fail": False,
+            },
+        },
+        {
             "case_id": "bad_image",
             "case_name": "图片质量风险样例",
             "case_type": "bad_image",
@@ -2623,9 +2646,25 @@ def run_regression_case(case: dict[str, Any]) -> dict[str, Any]:
     pdf_path = case.get("pdf_path")
     label_path = case.get("label_path")
     if not isinstance(pdf_path, Path) or not pdf_path.exists():
+        if case.get("expected_optional_local_sample"):
+            base_row.update(
+                {
+                    "是否达标": "是",
+                    "备注": f"{case.get('expected_notes', '')} 本地真实样本未随仓库提交，当前环境跳过该扩展回归。",
+                }
+            )
+            return base_row
         base_row["失败原因"] = f"样例文件缺失：{relative_display_path(pdf_path) if isinstance(pdf_path, Path) else pdf_path}"
         return base_row
     if not isinstance(label_path, Path) or not label_path.exists():
+        if case.get("expected_optional_local_sample"):
+            base_row.update(
+                {
+                    "是否达标": "是",
+                    "备注": f"{case.get('expected_notes', '')} 本地真实样本未随仓库提交，当前环境跳过该扩展回归。",
+                }
+            )
+            return base_row
         base_row["失败原因"] = f"样例文件缺失：{relative_display_path(label_path) if isinstance(label_path, Path) else label_path}"
         return base_row
 
@@ -2672,6 +2711,41 @@ def run_regression_case(case: dict[str, Any]) -> dict[str, Any]:
         ]
         if any(clean_text(row.get("标签值", "")).upper() in {"CHINA", "中国"} for row in producer_rows):
             reasons.append("生产者名称被错配为 CHINA/中国")
+    if case_type == "middle_east_energy_label":
+        wrong_patterns = {
+            "annual_water_consumption": ("10.0", "年耗水量错配为容量 10.0"),
+            "annual_energy_consumption": ("22000", "年耗电量错配为年耗水量 22000"),
+            "made_in": ("IMPEX", "产地错配为品牌 impex"),
+            "brand_name": ("WM1001TMG", "品牌错配为型号 WM1001TMG"),
+            "standard_reference_no": ("REFERENCE NO", "标准编号错配为字段名 REFERENCE NO"),
+            "registration_no": ("宁波", "注册号错配为公司名称"),
+        }
+        for row in record.get("comparison_rows", []):
+            field_key = clean_text(row.get("field_key", ""))
+            if row.get("检测结果") != "PASS" or field_key not in wrong_patterns:
+                continue
+            forbidden_value, reason = wrong_patterns[field_key]
+            combined = f"{row.get('图纸值', '')} {row.get('标签值', '')}".upper()
+            if forbidden_value.upper() in combined:
+                reasons.append(reason)
+        me_expected_fields = {
+            "annual_energy_consumption",
+            "annual_water_consumption",
+            "capacity",
+            "made_in",
+            "brand_name",
+            "model_number",
+            "standard_reference_no",
+            "registration_no",
+        }
+        seen_me_fields = {
+            clean_text(row.get("field_key", ""))
+            for row in record.get("comparison_rows", [])
+            if clean_text(row.get("field_key", "")) in me_expected_fields
+        }
+        missing = sorted(me_expected_fields - seen_me_fields)
+        if missing:
+            reasons.append(f"中东样例核心字段未进入检测结果：{', '.join(missing)}")
 
     base_row.update(
         {

@@ -14,6 +14,9 @@
 - 模板状态和字段比对结论解耦。
 - 图片质量门禁。
 - 二维码类型识别。
+- 现场检测端二维码匹配确认、人工选择/上传正确图纸。
+- 二维码绑定到正确图纸。
+- 图纸与标签一致性预检，疑似匹配错误进入 NEED_REVIEW。
 - 检测记录保存。
 - demo A confirmed 模板。
 - 真实样本轻量回归测试入口。
@@ -28,7 +31,8 @@
 - demo A：7 PASS / 0 FAIL / 1 NEED_REVIEW。
 - demo A 模板：`DEMO-CN-ENERGY-SAMPLE-A`，`confirmed`，`template_version=v2`，`template_confirmed_by=demo_seed`。
 - 中东/阿曼样例：10 PASS / 0 FAIL / 0 NEED_REVIEW。
-- 回归样例：7 个 case 均达标。
+- 现场中文能效图纸人工覆盖样例：7 PASS / 0 FAIL / 1 NEED_REVIEW。
+- 回归样例：8 个 case 均达标。
 - records/evidence 写入已验证。
 
 ## 回归样例
@@ -36,6 +40,7 @@
 | case_id | 结果 |
 |---|---|
 | cn_pass | 达标 |
+| cn_energy_manual_drawing_override | 达标 |
 | cn_fail_demo | 达标 |
 | multilingual | 达标 |
 | middle_east_energy_label | 达标 |
@@ -48,6 +53,7 @@
 - 多语言字段仍需继续通过更多真实样本扩充和验证。
 - 首次新图纸解析可能较慢，试运行时建议先入库并确认模板。
 - 真实现场图纸模板需人工确认。
+- 二维码匹配关系需要现场人工确认；本版本不是正式审批流。
 - 本地 JSONL 记录不适合作为正式生产数据库。
 - 正式上线前仍需数据库、权限、审批、审计和异常复核闭环。
 - OCR 结果仍受拍照角度、反光、模糊和标签区域占比影响。

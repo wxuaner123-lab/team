@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from comparison import compare_fields
+from comparison import canonical_compare_value, compare_fields
 from drawing_parser import extract_drawing_content
 from dynamic_field_template import (
     include_in_inspection,
@@ -34,6 +34,8 @@ from product_store import (
     delete_drawing,
     ensure_storage,
     get_current_drawing_for_product,
+    get_drawing,
+    get_product,
     get_product_by_index,
     list_drawings_for_product,
     load_drawings,
@@ -379,6 +381,25 @@ def regression_cases() -> list[dict[str, Any]]:
             "expected_allow_need_review": True,
             "expected_notes": "核心字段大部分 PASS，生产者名称允许 NEED_REVIEW。",
             "demo_case": demo_a,
+        },
+        {
+            "case_id": "cn_energy_manual_drawing_override",
+            "case_name": "中文能效标签人工选择正确图纸",
+            "case_type": "cn_energy_manual_drawing_override",
+            "product_id": demo_a.get("product_id", ""),
+            "drawing_id": DEMO_A_DRAWING_ID,
+            "pdf_path": demo_a["pdf"],
+            "label_path": demo_a["label"],
+            "expected_min_pass": 6,
+            "expected_max_fail": 0,
+            "expected_allow_need_review": True,
+            "expected_notes": "模拟二维码自动匹配不确定或错误后，人工改用中文能效图纸完成检测。",
+            "demo_case": {
+                **demo_a,
+                "case_id": "cn_energy_manual_drawing_override",
+                "product_id": "DEMO-CN-ENERGY",
+                "product_model": "JW30-77NBCCQDZW",
+            },
         },
         {
             "case_id": "cn_fail_demo",
@@ -1067,6 +1088,202 @@ def display_drawing_card(drawing: dict[str, Any] | None) -> None:
     st.caption(f"PDF文件：{drawing.get('pdf_name', '')}")
 
 
+def drawing_display_label(drawing: dict[str, Any] | None) -> str:
+    if not drawing:
+        return "未选择图纸"
+    return " / ".join(
+        item
+        for item in (
+            clean_text(drawing.get("drawing_id", "")),
+            clean_text(drawing.get("product_id", "")),
+            clean_text(drawing.get("product_model", "")),
+            clean_text(drawing.get("pdf_name", "")),
+            clean_text(drawing.get("version", "")),
+        )
+        if item
+    )
+
+
+def drawing_inspection_field_count(drawing: dict[str, Any] | None) -> int:
+    return len(inspection_field_template(drawing_field_template(drawing)))
+
+
+def qr_match_confidence(qr_match: dict[str, Any] | None) -> tuple[float, bool]:
+    if not qr_match:
+        return 0.0, True
+    status = clean_text(qr_match.get("match_status", ""))
+    qr_type = clean_text((qr_match.get("qr_result") or {}).get("qr_type", "unknown_qr"))
+    if qr_match.get("is_manual_binding") and status == "matched_drawing":
+        return 0.98, False
+    if status == "matched_drawing" and qr_type in {"product_qr", "drawing_qr"}:
+        return 0.90, False
+    if status == "matched_product_with_drawings":
+        return 0.72, True
+    if status in {"matched_product_no_drawing", "label_url_only", "no_match", "unknown"}:
+        return 0.0, True
+    if qr_type == "unknown_qr":
+        return 0.45, True
+    return 0.60, True
+
+
+def selected_drawing_from_state() -> dict[str, Any] | None:
+    drawing_id = clean_text(st.session_state.get("inspection_selected_drawing_id", ""))
+    return get_drawing(drawing_id) if drawing_id else None
+
+
+def set_current_inspection_drawing(
+    drawing: dict[str, Any],
+    method: str,
+    reason: str,
+    qr_match: dict[str, Any] | None,
+) -> None:
+    st.session_state["inspection_selected_drawing_id"] = clean_text(drawing.get("drawing_id", ""))
+    st.session_state["inspection_drawing_selection_method"] = method
+    st.session_state["inspection_drawing_selection_reason"] = reason
+    st.session_state["inspection_qr_matched_drawing_id"] = clean_text((qr_match or {}).get("matched_drawing_id", ""))
+
+
+def render_drawing_match_confirmation(
+    qr_text: str,
+    qr_match: dict[str, Any] | None,
+    product: dict[str, Any] | None,
+    drawing: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    st.subheader("2. 匹配图纸库")
+    confidence, need_review = qr_match_confidence(qr_match)
+    qr_result = (qr_match or {}).get("qr_result", {})
+    auto_drawing = drawing
+    auto_product = product
+
+    summary = {
+        "二维码原文": qr_text,
+        "二维码类型": qr_result.get("qr_type", "-"),
+        "系统匹配产品": clean_text((auto_product or {}).get("product_id", "")) or "-",
+        "系统匹配图纸": drawing_display_label(auto_drawing),
+        "匹配置信度": confidence,
+        "匹配原因": clean_text((qr_match or {}).get("match_reason", "")) or "-",
+        "当前图纸字段数量": drawing_inspection_field_count(auto_drawing),
+        "模板状态": template_status_text(clean_text((auto_drawing or {}).get("template_status", ""))) if auto_drawing else "-",
+        "是否需要人工确认": "是" if need_review else "否",
+    }
+    st.dataframe(pd.DataFrame([summary]), width="stretch", hide_index=True)
+    if need_review:
+        st.warning("当前二维码未能唯一匹配图纸，请人工选择或上传图纸。")
+    elif auto_drawing:
+        st.success("二维码已匹配到图纸。请确认图纸正确；如不正确，可在下方人工改选。")
+
+    state_drawing = selected_drawing_from_state()
+    current_drawing = state_drawing or auto_drawing
+    current_method = clean_text(st.session_state.get("inspection_drawing_selection_method", "")) or ("auto" if auto_drawing else "")
+    current_reason = clean_text(st.session_state.get("inspection_drawing_selection_reason", "")) or clean_text((qr_match or {}).get("match_reason", ""))
+
+    st.markdown("**人工确认 / 纠正图纸**")
+    drawings = load_drawings()
+    if drawings:
+        labels = [
+            f"{drawing_display_label(item)} / 模板：{template_status_text(item.get('template_status', ''))} / 字段：{drawing_inspection_field_count(item)}"
+            for item in drawings
+        ]
+        default_index = 0
+        if current_drawing:
+            default_index = next(
+                (index for index, item in enumerate(drawings) if item.get("drawing_id") == current_drawing.get("drawing_id")),
+                0,
+            )
+        selected_index = st.selectbox(
+            "手动选择正确图纸",
+            range(len(drawings)),
+            index=default_index,
+            format_func=lambda index: labels[index],
+            key="inspection_manual_drawing_select",
+        )
+        selection_reason = st.text_input(
+            "选择原因",
+            value="二维码自动匹配不确定，现场人工确认图纸",
+            key="inspection_manual_selection_reason",
+        )
+        if st.button("使用所选图纸进行本次检测", width="stretch"):
+            selected = drawings[selected_index]
+            set_current_inspection_drawing(selected, "manual", selection_reason, qr_match)
+            current_drawing = selected
+            current_method = "manual"
+            current_reason = selection_reason
+            product = get_product(clean_text(selected.get("product_id", ""))) or product or {
+                "product_id": selected.get("product_id", ""),
+                "product_model": selected.get("product_model", ""),
+                "version": selected.get("version", ""),
+                "standard_fields": selected.get("standard_fields", {}),
+            }
+            st.success("当前使用图纸已由人工选择。")
+    else:
+        st.info("图纸库为空，请在下方上传正确图纸。")
+
+    with st.expander("当前二维码未匹配到正确图纸？上传正确图纸", expanded=not current_drawing):
+        uploaded_pdf = st.file_uploader("现场上传PDF图纸", type=["pdf"], key="inspection_override_pdf_upload")
+        cols = st.columns(3)
+        fallback_product_id = clean_text((qr_match or {}).get("matched_product_id", "")) or clean_text((qr_result.get("parsed_fields") or {}).get("product_id", "")) or "UNKNOWN-PRODUCT"
+        upload_product_id = cols[0].text_input("产品ID", value=fallback_product_id, key="inspection_override_product_id")
+        upload_model = cols[1].text_input("产品型号", value=clean_text((qr_result.get("parsed_fields") or {}).get("model", "")) or upload_product_id, key="inspection_override_product_model")
+        upload_version = cols[2].text_input("图纸版本", value="V1.0", key="inspection_override_version")
+        if uploaded_pdf is not None and st.button("上传图纸并用于本次检测", type="primary", width="stretch"):
+            with st.spinner("正在保存图纸并生成字段模板..."):
+                registration = register_drawing_pdf(
+                    pdf_bytes=uploaded_pdf.getvalue(),
+                    pdf_name=uploaded_pdf.name,
+                    qr_text="",
+                    product_id=upload_product_id,
+                    product_model=upload_model,
+                    version=upload_version,
+                    make_current=True,
+                )
+            current_drawing = registration["drawing"]
+            product = registration["product"]
+            set_current_inspection_drawing(current_drawing, "uploaded", "现场上传正确图纸并用于本次检测", qr_match)
+            current_method = "uploaded"
+            current_reason = "现场上传正确图纸并用于本次检测"
+            st.success("图纸已上传并生成字段模板，当前检测将使用这张图纸。")
+
+    if current_drawing and qr_text:
+        bind_reason = st.text_input("二维码绑定备注", value="现场确认二维码与当前图纸绑定", key="inspection_bind_reason")
+        if st.button("将当前二维码绑定到此图纸", width="stretch"):
+            upsert_qr_binding(
+                qr_text=qr_text,
+                qr_type=qr_result.get("qr_type", "unknown_qr"),
+                product_id=clean_text(current_drawing.get("product_id", "")),
+                drawing_id=clean_text(current_drawing.get("drawing_id", "")),
+                model=clean_text(current_drawing.get("product_model", "")),
+                created_by=st.session_state.operator_name or "operator",
+                note=bind_reason,
+                bind_reason=bind_reason,
+            )
+            qr_match = resolve_qr_match(qr_text)
+            st.success("二维码已绑定到当前图纸，下次扫码将自动匹配。")
+
+    if current_drawing:
+        product = get_product(clean_text(current_drawing.get("product_id", ""))) or product or {
+            "product_id": current_drawing.get("product_id", ""),
+            "product_model": current_drawing.get("product_model", ""),
+            "version": current_drawing.get("version", ""),
+            "standard_fields": current_drawing.get("standard_fields", {}),
+        }
+        st.info(f"当前实际使用图纸：{drawing_display_label(current_drawing)}")
+        st.caption(f"图纸模板来源：{drawing_field_template_source(current_drawing)}；选择方式：{current_method or 'auto'}；原因：{current_reason or '-'}")
+        if qr_match is not None:
+            qr_match["manual_selected_drawing_id"] = clean_text(current_drawing.get("drawing_id", "")) if current_method in {"manual", "uploaded"} else ""
+            qr_match["drawing_selection_method"] = current_method or "auto"
+            qr_match["selection_reason"] = current_reason
+            qr_match["current_drawing_id"] = clean_text(current_drawing.get("drawing_id", ""))
+            qr_match["current_drawing_label"] = drawing_display_label(current_drawing)
+    else:
+        st.warning("当前还没有可用于检测的图纸，请人工选择或上传正确图纸。")
+
+    if need_review and current_method not in {"manual", "uploaded"} and current_drawing:
+        st.warning("当前仅为低置信候选图纸，不能直接进入检测。请点击“使用所选图纸进行本次检测”，或上传正确图纸。")
+        return product, None, qr_match
+
+    return product, current_drawing, qr_match
+
+
 def render_unmatched_qr_upload(qr_text: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     st.error("未找到对应图纸。")
     action = st.radio(
@@ -1253,6 +1470,17 @@ def get_product_from_scan() -> tuple[dict[str, Any] | None, dict[str, Any] | Non
         "演示二维码内容：ICM-2400-A-V1.2 或 PID=ICM-2400-A;MODEL=ICM-2400-A;SN=ICM2400A-260701;BATCH=DEMO-BATCH"
     )
 
+    if qr_text and st.session_state.get("inspection_active_qr_text") != qr_text:
+        st.session_state["inspection_active_qr_text"] = qr_text
+        for key in (
+            "inspection_selected_drawing_id",
+            "inspection_drawing_selection_method",
+            "inspection_drawing_selection_reason",
+            "inspection_qr_matched_drawing_id",
+            "last_inspection",
+        ):
+            st.session_state.pop(key, None)
+
     qr_match = resolve_qr_match(qr_text) if qr_text else None
     product = qr_match.get("product") if qr_match else None
     drawing = qr_match.get("drawing") if qr_match else None
@@ -1279,7 +1507,9 @@ def get_product_from_scan() -> tuple[dict[str, Any] | None, dict[str, Any] | Non
 
     options = product_options()
     selected_label = ""
-    if qr_text and (not product or not drawing):
+    if qr_text:
+        product, drawing, qr_match = render_drawing_match_confirmation(qr_text, qr_match, product, drawing)
+    elif qr_text and (not product or not drawing):
         registered_product, registered_drawing, updated_match = render_qr_binding_actions(qr_text, qr_match or {})
         if registered_product and registered_drawing:
             product = registered_product
@@ -1296,8 +1526,9 @@ def get_product_from_scan() -> tuple[dict[str, Any] | None, dict[str, Any] | Non
         selected_label = options[selected_index]
 
     if product:
-        st.subheader("2. 匹配图纸库")
-        st.success("标准数据已加载")
+        if not qr_text:
+            st.subheader("2. 匹配图纸库")
+            st.success("标准数据已加载")
         display_product_card(product, qr_payload or parse_qr_payload(qr_text))
         display_drawing_card(drawing)
     else:
@@ -1600,6 +1831,12 @@ def build_inspection_record(
         "batch_no": qr_payload.get("batch") or qr_payload.get("batch_no") or "",
         "qr_payload": qr_payload,
         "qr_result": qr_record_payload(qr_match),
+        "qr_matched_drawing_id": clean_text((qr_match or {}).get("matched_drawing_id", "")),
+        "manual_selected_drawing_id": clean_text((qr_match or {}).get("manual_selected_drawing_id", "")),
+        "drawing_selection_method": clean_text((qr_match or {}).get("drawing_selection_method", "")) or "auto",
+        "selection_reason": clean_text((qr_match or {}).get("selection_reason", "")),
+        "current_drawing_id": clean_text((qr_match or {}).get("current_drawing_id", "")) or (drawing.get("drawing_id", "") if drawing else ""),
+        "current_drawing_label": clean_text((qr_match or {}).get("current_drawing_label", "")) or drawing_display_label(drawing),
         "result": overall_result,
         "fail_fields": fail_fields,
         "unknown_fields": unknown_fields,
@@ -1828,6 +2065,97 @@ def run_demo_detection(
     }
 
 
+def first_label_value(label_result: dict[str, Any], label_fields: dict[str, str], field_key: str) -> str:
+    legacy_names = {
+        "model_number": ("规格型号", "产品型号", "型号"),
+        "product_model": ("规格型号", "产品型号", "型号"),
+        "document_number": ("图纸编码", "编码"),
+        "standard_reference_no": ("依据国家标准", "标准编号"),
+        "brand_name": ("品牌", "品牌名称"),
+        "made_in": ("制造地", "产地"),
+    }
+    if clean_text(label_fields.get(field_key, "")):
+        return clean_text(label_fields.get(field_key, ""))
+    fields = label_result.get("fields", {}) if isinstance(label_result.get("fields", {}), dict) else {}
+    for name in legacy_names.get(field_key, ()):
+        if clean_text(fields.get(name, "")):
+            return clean_text(fields.get(name, ""))
+    return ""
+
+
+def standard_precheck_value(
+    drawing: dict[str, Any] | None,
+    standard_snapshot: dict[str, str],
+    field_key: str,
+) -> str:
+    if field_key in {"model_number", "product_model"}:
+        return (
+            clean_text(standard_snapshot.get("model_number", ""))
+            or clean_text((drawing or {}).get("product_model", ""))
+            or clean_text((drawing or {}).get("product_id", ""))
+        )
+    if field_key == "document_number":
+        return clean_text(standard_snapshot.get("drawing_code", "")) or clean_text((drawing or {}).get("drawing_code", ""))
+    return clean_text(standard_snapshot.get(field_key, ""))
+
+
+def values_conflict_for_precheck(field_key: str, standard_value: str, label_value: str) -> bool:
+    if not standard_value or not label_value:
+        return False
+    standard = canonical_compare_value(field_key, standard_value)
+    label = canonical_compare_value(field_key, label_value)
+    if not standard or not label:
+        return False
+    if standard == label:
+        return False
+    if field_key in {"model_number", "product_model", "standard_reference_no"}:
+        return True
+    if field_key in {"brand_name", "made_in"}:
+        return standard.upper() != label.upper()
+    return False
+
+
+def drawing_label_consistency_precheck(
+    drawing: dict[str, Any] | None,
+    standard_snapshot: dict[str, str],
+    label_result: dict[str, Any],
+    label_fields: dict[str, str],
+) -> list[dict[str, Any]]:
+    if not drawing:
+        return []
+    rows: list[dict[str, Any]] = []
+    for field_key, display_name in (
+        ("model_number", "型号/规格型号"),
+        ("product_model", "产品型号"),
+        ("document_number", "图纸编码"),
+        ("standard_reference_no", "标准编号"),
+        ("brand_name", "品牌名称"),
+        ("made_in", "产地"),
+    ):
+        standard_value = standard_precheck_value(drawing, standard_snapshot, field_key)
+        label_value = first_label_value(label_result, label_fields, field_key)
+        if not values_conflict_for_precheck(field_key, standard_value, label_value):
+            continue
+        rows.append(
+            {
+                "字段名称": "drawing_match_risk",
+                "中文字段名": "图纸匹配预检",
+                "原始字段名": display_name,
+                "field_key": "drawing_match_risk",
+                "是否参与检测": "预检",
+                "图纸值": standard_value,
+                "标签值": label_value,
+                "检测结果": "NEED_REVIEW",
+                "映射状态": "",
+                "异常说明": f"标签{display_name}与当前匹配图纸不一致，疑似图纸匹配错误。请重新选择或上传图纸。",
+                "置信度": 0.0,
+                "OCR候选值": label_value,
+                "字段匹配说明": "图纸与标签一致性预检",
+            }
+        )
+    return rows
+
+
 def build_demo_record(
     case: dict[str, Any],
     label_name: str,
@@ -1947,6 +2275,14 @@ def render_inspection_page() -> None:
                     label_result.get("field_match_debug", {}),
                 )
                 comparison_rows = enrich_comparison_rows_with_template(comparison_rows, inspection_template)
+                precheck_rows = drawing_label_consistency_precheck(
+                    drawing,
+                    standard_snapshot,
+                    label_result,
+                    label_fields_for_compare,
+                )
+                if precheck_rows:
+                    comparison_rows = [*precheck_rows, *comparison_rows]
                 overall_result = overall_from_rows(comparison_rows)
                 add_perf(perf, "field_compare_seconds", time.perf_counter() - compare_started)
             else:
@@ -1988,6 +2324,9 @@ def render_inspection_page() -> None:
                     record.get("template_status", ""),
                     record["quality_result"].get("quality_status", ""),
                 )
+                if any(row.get("field_key") == "drawing_match_risk" for row in comparison_rows):
+                    record["final_recommendation"] = "需人工确认图纸匹配关系。"
+                    record["drawing_match_precheck"] = "NEED_REVIEW"
                 saved_record = append_quality_record(record)
                 st.session_state.last_inspection = saved_record
             except Exception as error:
@@ -2711,6 +3050,27 @@ def run_regression_case(case: dict[str, Any]) -> dict[str, Any]:
         ]
         if any(clean_text(row.get("标签值", "")).upper() in {"CHINA", "中国"} for row in producer_rows):
             reasons.append("生产者名称被错配为 CHINA/中国")
+    if case_type == "cn_energy_manual_drawing_override":
+        drawing_text = f"{record.get('drawing_id', '')} {record.get('drawing_name', '')} {record.get('drawing_pdf', '')} {record.get('product_model', '')}"
+        if "ICM-2400-A" in drawing_text:
+            reasons.append("人工覆盖后仍使用 ICM-2400-A 图纸")
+        expected_keys = {
+            "model_number",
+            "energy_class",
+            "annual_energy_consumption",
+            "annual_water_consumption",
+            "cleaning_ratio",
+            "wash_spin_capacity",
+            "standard_reference_no",
+        }
+        pass_keys = {
+            clean_text(row.get("field_key", ""))
+            for row in record.get("comparison_rows", [])
+            if row.get("检测结果") == "PASS"
+        }
+        missing = sorted(expected_keys - pass_keys)
+        if missing:
+            reasons.append(f"人工覆盖中文能效图纸后核心字段未 PASS：{', '.join(missing)}")
     if case_type == "middle_east_energy_label":
         wrong_patterns = {
             "annual_water_consumption": ("10.0", "年耗水量错配为容量 10.0"),

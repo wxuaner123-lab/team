@@ -120,6 +120,9 @@ def parse_qr_content(raw_text: str, known_drawing_ids: set[str] | None = None, k
         "url": raw if is_url(raw) else "",
     }
 
+    if is_url(raw):
+        return qr_result(raw, normalized, "label_url_qr", parsed_fields, 0.82, "二维码是URL，需人工确认或绑定后再用于图纸匹配。")
+
     if normalized and normalize_lookup(normalized) in {normalize_lookup(x) for x in known_drawing_ids | known_drawing_qrs}:
         return qr_result(raw, normalized, "drawing_qr", parsed_fields, 0.96, "二维码内容命中已有图纸ID或图纸二维码。")
 
@@ -130,9 +133,6 @@ def parse_qr_content(raw_text: str, known_drawing_ids: set[str] | None = None, k
     product_markers = {"PRODUCT_ID", "PID", "MODEL", "SN", "BATCH", "PRODUCT_MODEL"}
     if upper_keys.intersection(product_markers):
         return qr_result(raw, normalized, "product_qr", parsed_fields, 0.9, "二维码包含产品字段。")
-
-    if is_url(raw):
-        return qr_result(raw, normalized, "label_url_qr", parsed_fields, 0.82, "二维码是URL，未命中已有产品或图纸绑定时按标签/平台链接处理。")
 
     return qr_result(raw, normalized, "unknown_qr", parsed_fields, 0.35 if raw else 0.0, "二维码内容无法稳定判断类型。")
 

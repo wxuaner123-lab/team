@@ -335,6 +335,7 @@ def upsert_qr_binding(
     model: str = "",
     created_by: str = "demo_user",
     note: str = "",
+    bind_reason: str = "",
 ) -> dict[str, Any]:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     normalized_qr = normalize_key(qr_text)
@@ -345,6 +346,8 @@ def upsert_qr_binding(
     ]
     binding = {
         "qr_text": clean_text(qr_text),
+        "qr_raw_text": clean_text(qr_text),
+        "qr_normalized_text": normalized_qr,
         "qr_type": clean_text(qr_type) or "unknown_qr",
         "product_id": clean_text(product_id),
         "drawing_id": clean_text(drawing_id),
@@ -352,6 +355,9 @@ def upsert_qr_binding(
         "binding_status": "active",
         "created_at": now,
         "created_by": clean_text(created_by) or "demo_user",
+        "bound_at": now,
+        "bound_by": clean_text(created_by) or "demo_user",
+        "bind_reason": clean_text(bind_reason) or clean_text(note),
         "note": clean_text(note),
     }
     bindings.append(binding)
@@ -773,6 +779,13 @@ def resolve_qr_match(qr_text: str) -> dict[str, Any]:
     qr_payload = parse_qr_payload(raw)
     binding = active_binding_for_qr(raw)
     is_manual_binding = False
+    qr_type = qr_result.get("qr_type", "unknown_qr")
+
+    if binding and qr_type == "label_url_qr":
+        binding_type = clean_text(binding.get("qr_type", ""))
+        binding_by = clean_text(binding.get("created_by", ""))
+        if binding_type != "label_url_qr" or binding_by in {"system_migration", "system", ""}:
+            binding = None
 
     if binding:
         is_manual_binding = clean_text(binding.get("created_by", "")) not in {"system_migration", ""}
@@ -793,7 +806,6 @@ def resolve_qr_match(qr_text: str) -> dict[str, Any]:
         )
 
     parsed = qr_result.get("parsed_fields", {})
-    qr_type = qr_result.get("qr_type", "unknown_qr")
 
     if qr_type == "drawing_qr":
         drawing = None

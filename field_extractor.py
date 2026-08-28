@@ -130,14 +130,14 @@ def extract_fallback_known_values(text: str, fields: dict[str, str]) -> None:
     compact = clean_text(text)
 
     if not fields.get("制造地"):
-        if re.search(r"MADE\s+IN\s+CHINA", compact, flags=re.IGNORECASE):
-            fields["制造地"] = "China"
+        match = re.search(r"\bMADE\s+IN\s+([A-Za-z][A-Za-z .'-]{1,40})\b", compact, flags=re.IGNORECASE)
+        if match:
+            fields["制造地"] = clean_candidate_value(match.group(1))
 
     if not fields.get("品牌"):
-        for brand in ("impex", "DEFY"):
-            if re.search(rf"\b{re.escape(brand)}\b", compact, flags=re.IGNORECASE):
-                fields["品牌"] = brand
-                break
+        match = re.search(r"\bBRAND\s+NAME\s+([A-Za-z][A-Za-z0-9 ._-]{1,40})\b", compact, flags=re.IGNORECASE)
+        if match:
+            fields["品牌"] = clean_candidate_value(match.group(1))
 
     if not fields.get("标签名称"):
         if re.search(r"CHINA\s+ENERGY\s+LABEL|中国能效标识|能效标签", compact, re.IGNORECASE):

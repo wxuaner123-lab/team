@@ -2,10 +2,9 @@
 
 ## 交付版本
 
-- 版本名称：图纸驱动标签检测 MVP 试运行候选版
+- 版本名称：图纸驱动标签检测 MVP 试运行候选版 v0.5
 - 当前分支：`codex/phase1-productized-mvp`
-- 当前本地 commit：`d67483c630cfa607def3ef748a14712cc065b46e`
-- 当前远端状态：已推送到 GitHub，远端分支 `codex/phase1-productized-mvp` 最新 commit 为 `c101cb6`
+- 当前远端状态：已推送到 GitHub；本清单随 v0.5 交付审查提交更新，最终 commit 以 GitHub 远端分支最新 HEAD 为准
 - 部署入口：`app_quality_terminal.py`
 - 技术栈：Python + Streamlit
 
@@ -23,21 +22,25 @@
 | 试运行验收 | 已具备 | 用于判断是否适合进入现场试用 |
 | 演示诊断 / 部署自检 | 已具备 | 用于排查部署和样例问题 |
 | 真实样本轻量回归测试 | 已具备 | 用于每次修改后的基础回归 |
+| OCR/模板缓存与图片缩放 | 已具备 | 用于降低现场检测耗时 |
+| 通用字段定义与布局绑定 | 已具备 | 用于多语言标签字段值绑定和错位防护 |
 
 ## 回归测试结果
 
 | case_id | PASS | FAIL | NEED_REVIEW | 是否达标 |
 |---|---:|---:|---:|---|
 | cn_pass | 7 | 0 | 1 | 是 |
-| cn_fail_demo | 2 | 1 | 5 | 是 |
+| cn_fail_demo | 6 | 1 | 1 | 是 |
 | multilingual | 0 | 0 | 1 | 是 |
+| middle_east_energy_label | 10 | 0 | 0 | 是 |
 | bad_image | 2 | 0 | 6 | 是 |
 | qr_url | 0 | 0 | 0 | 是 |
 | template_unconfirmed | 1 | 0 | 0 | 是 |
 
 ## 已知问题
 
-- 多语言字段自动通过能力仍弱。
+- 多语言字段绑定已增强，但仍需要更多国家和版式样本验证。
+- 首次新图纸 PDF 模板解析可能较慢，已保存模板会优先加载。
 - 真实现场图纸模板需要人工确认。
 - 图片质量对现场稳定性影响较大。
 - 本地 JSONL 记录不适合作为正式生产数据库。
